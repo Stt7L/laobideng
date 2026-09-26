@@ -1,4 +1,4 @@
-"""Desktop UI and lifecycle for the VGN V98pro ripple effect."""
+"""Desktop UI and lifecycle for 老必灯."""
 
 import ctypes
 import json
@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
         self.engine.preference = self.settings.get("transport") if self.settings.get("transport") in ("auto", "wired", "wireless") else "auto"
         self.engine.last_frame = self.engine.frame(0)
 
-        self.setWindowTitle("老必灯 · VGN V98pro")
+        self.setWindowTitle(f"老必灯 · {self.profile['model'] if self.profile else '键盘灯效工作室'}")
         self.setWindowIcon(QIcon(str(ICON)))
         self.setMinimumSize(680, 620)
         available = QApplication.primaryScreen().availableGeometry()
@@ -701,7 +701,7 @@ class MainWindow(QMainWindow):
         if self.preview_mode or not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray = QSystemTrayIcon(QIcon(str(ICON)), self)
-        self.tray.setToolTip("老必灯 · VGN V98pro 灯效")
+        self.tray.setToolTip("老必灯 · 键盘灯效工作室")
         self.tray_menu = QMenu(self)
         show_action = self.tray_menu.addAction("显示窗口")
         show_action.triggered.connect(self.show_window)
@@ -949,6 +949,7 @@ class MainWindow(QMainWindow):
         self.engine.disconnect()
         self.engine.preview_events = False
         self.profile = profile
+        self.setWindowTitle(f"老必灯 · {profile['model']}")
         caps = keycaps_from_profile(profile)
         if caps:
             set_keycaps(caps)
