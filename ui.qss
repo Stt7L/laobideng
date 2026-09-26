@@ -99,6 +99,22 @@ QPushButton#galleryToggle {
 QPushButton#galleryToggle:hover { background: #354832; border-color: #8FB85D; }
 QPushButton#galleryToggle:pressed { background: #263426; }
 QPushButton#galleryToggle:focus { border-color: #C4EF70; }
+QPushButton#categoryChoice {
+    background: #293229;
+    color: #CFDCC8;
+    border: 1px solid #475647;
+    border-radius: 12px;
+    padding: 10px 13px;
+    min-height: 27px;
+    font-weight: 600;
+}
+QPushButton#categoryChoice:hover { background: #344035; border-color: #81966D; }
+QPushButton#categoryChoice:checked {
+    background: #34492B;
+    color: #E7F9C7;
+    border: 1px solid #C4EF70;
+}
+QPushButton#categoryChoice:focus { border: 2px solid #E0FFA4; }
 QPushButton#transportChoice {
     background: #293229;
     color: #C9D4C4;

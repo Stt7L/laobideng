@@ -7,7 +7,8 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from effects import EFFECT_IDS, REACTIVE, render, ripple_lifetime, reactive_lifetime
+from effects import EFFECT_IDS, MUSIC, REACTIVE, render, ripple_lifetime, reactive_lifetime
+from audio_meter import AudioMeter
 from layout import NAME_CENTERS, NAME_LEDS
 
 LOG = logging.getLogger("vgn-ripple")
@@ -314,6 +315,11 @@ class LightingController:
         self.user32.CallNextHookEx.restype = ctypes.c_ssize_t
         self.events = queue.Queue()
         self.ripples = []
+        self.audio_meter = AudioMeter()
+        self.audio_level = 0.0
+        self.audio_last_level = 0.0
+        self.audio_beats = []
+        self.audio_last_beat = 0.0
         self.down_keys = set()
         self.transport = None
         self.preference = "auto"
@@ -389,6 +395,7 @@ class LightingController:
             except OSError:
                 pass
         self.disconnect()
+        self.audio_meter.close()
 
     def set_active(self, active):
         if active and (self.connected or self.preview_events) and self.effect in REACTIVE:
@@ -397,6 +404,7 @@ class LightingController:
             self._remove_hook()
         self.ripples_enabled = active
         self.ripples.clear()
+        self.audio_beats.clear()
         self.down_keys.clear()
         with self.worker_lock:
             self.worker_pending_events.clear()
@@ -406,6 +414,11 @@ class LightingController:
             raise ValueError(effect)
         self.effect = effect
         self.ripples.clear()
+        self.audio_beats.clear()
+        self.audio_last_level = 0.0
+        if effect not in MUSIC:
+            self.audio_meter.close()
+            self.audio_level = 0.0
         with self.worker_lock:
             self.worker_pending_events.clear()
         if (self.connected or self.preview_events) and self.ripples_enabled and effect in REACTIVE:
@@ -458,7 +471,7 @@ class LightingController:
                     wireless_ripples.extend((name, now) for name in pending)
                     lifetime = (ripple_lifetime(self.speed)
                                 if self.effect == "ripple"
-                                else reactive_lifetime(self.speed))
+                                else reactive_lifetime(self.speed, self.effect))
                     wireless_ripples = [event for event in wireless_ripples
                                         if now - event[1] < lifetime][-64:]
                     frame = render(self.effect, now, self.base, self.accent,
@@ -491,6 +504,19 @@ class LightingController:
             self.disconnect()
             raise error
         now = now if now is not None else time.perf_counter()
+        if self.ripples_enabled and self.effect in MUSIC:
+            self.audio_level = self.audio_meter.sample()
+            if (self.audio_level > 0.24 and
+                    self.audio_level - self.audio_last_level > 0.075 and
+                    now - self.audio_last_beat > 0.24):
+                self.audio_beats.append(now)
+                self.audio_last_beat = now
+            self.audio_last_level = self.audio_level
+            self.audio_beats = [started for started in self.audio_beats
+                                if now - started < 1.6][-12:]
+        elif self.audio_meter.available:
+            self.audio_meter.close()
+            self.audio_level = 0.0
         try:
             while True:
                 name, started = self.events.get_nowait()
@@ -513,14 +539,14 @@ class LightingController:
 
     def frame(self, now):
         lifetime = (ripple_lifetime(self.speed) if self.effect == "ripple"
-                    else reactive_lifetime(self.speed))
+                    else reactive_lifetime(self.speed, self.effect))
         self.ripples = [(name, started) for name, started in self.ripples
                         if now - started < lifetime]
         if not self.ripples_enabled:
             return [self.base_color()] * MAX_LED
         return render(self.effect, now, self.base, self.accent,
                       self.brightness, self.speed, self.ripples,
-                      self.ripple_width)
+                      self.ripple_width, self.audio_level, self.audio_beats)
 
     def _install_hook(self):
         if self.hook:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from layout import DEFAULT_KEYCAPS, Keycap
 from backend import VK_NAMES
+from device_detection import detect_keyboards
 
 
 CANVAS_WIDTH = 884
@@ -418,15 +419,30 @@ class DeviceSetupDialog(QDialog):
         title = QLabel("先认识你的键盘")
         title.setObjectName("brandTitle")
         body.addWidget(title)
-        intro = QLabel("首次使用请确认型号、USB VID 和 PID。若不清楚，可询问外设客服或 AI 工具，并以电脑识别到的设备信息为准。")
+        intro = QLabel("自动读取已连接键盘的型号和设备编号。若设备只报告通用名称，可在下方修改。")
         intro.setWordWrap(True)
         intro.setObjectName("hint")
         body.addWidget(intro)
+        scan_row = QHBoxLayout()
+        self.detected = QComboBox()
+        self.detected.setAccessibleName("已识别的键盘")
+        self.detected.activated.connect(self._device_selected)
+        scan_row.addWidget(self.detected, 1)
+        scan = QPushButton("重新扫描")
+        scan.setObjectName("secondary")
+        scan.clicked.connect(self._scan_devices)
+        scan_row.addWidget(scan)
+        body.addLayout(scan_row)
+        self.scan_status = QLabel("")
+        self.scan_status.setObjectName("hint")
+        self.scan_status.setWordWrap(True)
+        body.addWidget(self.scan_status)
         fields = QFormLayout()
         fields.setSpacing(13)
-        self.model = QLineEdit(self.current.get("model", "VGN V98 Pro"))
-        self.vid = QLineEdit(self.current.get("vid", "320F"))
-        self.pid = QLineEdit(self.current.get("pid", "5055"))
+        self.model = QLineEdit(self.current.get("model", ""))
+        self.model.setPlaceholderText("例如 VGN V98 Pro")
+        self.vid = QLineEdit(self.current.get("vid", ""))
+        self.pid = QLineEdit(self.current.get("pid", ""))
         for entry in (self.vid, self.pid):
             entry.setMaxLength(4)
             entry.setPlaceholderText("4 位十六进制")
@@ -467,6 +483,55 @@ class DeviceSetupDialog(QDialog):
         save.clicked.connect(self._save)
         actions.addWidget(save)
         body.addLayout(actions)
+        self._scan_devices(auto_fill=not bool(current))
+
+    def _scan_devices(self, auto_fill=False):
+        try:
+            devices = detect_keyboards()
+        except OSError as error:
+            devices = []
+            self.scan_status.setText(f"扫描失败：{error}。仍可手动填写。")
+        self.detected.blockSignals(True)
+        self.detected.clear()
+        self.detected.addItem("选择检测到的键盘", None)
+        for device in devices:
+            model = device["model"] or "型号未上报"
+            label = f"{model}  ·  {device['vid']}:{device['pid']}  ·  {device['transport']}"
+            self.detected.addItem(label, device)
+        self.detected.blockSignals(False)
+        if devices:
+            self.scan_status.setText(
+                f"找到 {len(devices)} 个键盘设备。请选择要控制的键盘；通用名称可以修改。")
+            match = next((index for index, device in enumerate(devices, 1)
+                          if device["vid"] == self.current.get("vid")
+                          and device["pid"] == self.current.get("pid")), None)
+            if match:
+                self.detected.setCurrentIndex(match)
+            elif auto_fill:
+                known = next((index for index, device in enumerate(devices, 1)
+                              if device["known"]), None)
+                choice = known or (1 if len(devices) == 1 else None)
+                if choice:
+                    self.detected.setCurrentIndex(choice)
+                    self._device_selected(choice)
+        elif not self.scan_status.text():
+            self.scan_status.setText("暂未检测到键盘。请检查连接，或手动输入型号和 VID/PID。")
+
+    def _device_selected(self, index):
+        device = self.detected.itemData(index)
+        if not device:
+            return
+        if (self.vid.text().strip().upper(), self.pid.text().strip().upper()) != (
+                device["vid"], device["pid"]):
+            self.layout = None
+            self.layout_edited = False
+            self.photo_path = ""
+            self.photo_label.setText("尚未选择照片")
+        self.model.setText(device["model"])
+        self.vid.setText(device["vid"])
+        self.pid.setText(device["pid"])
+        if not device["model"]:
+            self.scan_status.setText("系统未上报可靠型号；VID/PID 已填入，请补充键盘型号。")
 
     def _choose_photo(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择键盘照片", str(Path.home()), PHOTO_FILTER)

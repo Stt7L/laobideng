@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
 
 from backend import LightingController, bluetooth_keyboard_present
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
-from effects import EFFECTS, EFFECT_IDS, REACTIVE
+from device_detection import detect_keyboards, preferred_known_keyboard
+from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE
 from layout import KEYCAPS, restore_v98_layout, set_keycaps
 
 
@@ -262,7 +263,11 @@ class MainWindow(QMainWindow):
         if self.engine.effect in self.effect_palettes:
             self.engine.base, self.engine.accent = self.effect_palettes[self.engine.effect]
         self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
-        self.gallery_expanded = bool(self.settings.get("gallery_expanded", False))
+        saved_category = self.settings.get("gallery_category")
+        self.gallery_category = (
+            saved_category if saved_category in {item[0] for item in CATEGORIES}
+            or (saved_category is None and "gallery_category" in self.settings)
+            else EFFECT_CATEGORY[self.engine.effect])
         self.engine.preference = self.settings.get("transport") if self.settings.get("transport") in ("auto", "wired", "wireless") else "auto"
         self.engine.last_frame = self.engine.frame(0)
 
@@ -363,7 +368,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.preview)
 
         effects_card, effects_layout = self._card("灯效画廊")
-        effects_hint = QLabel("每款灯效可独立保存配色 · 键盘与上方预览同步变化")
+        effects_hint = QLabel("每款灯效独立保存配色 · 点击分类按钮展开或收起")
         effects_hint.setObjectName("muted")
         effects_layout.addWidget(effects_hint)
         gallery_controls = QHBoxLayout()
@@ -371,24 +376,39 @@ class MainWindow(QMainWindow):
         self.gallery_selection.setObjectName("muted")
         gallery_controls.addWidget(self.gallery_selection)
         gallery_controls.addStretch()
-        self.gallery_toggle = QPushButton()
-        self.gallery_toggle.setObjectName("galleryToggle")
-        self.gallery_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gallery_toggle.setIconSize(QSize(18, 18))
-        self.gallery_toggle.clicked.connect(self._toggle_gallery)
-        gallery_controls.addWidget(self.gallery_toggle)
         effects_layout.addLayout(gallery_controls)
-        effect_grid = QGridLayout()
-        effect_grid.setHorizontalSpacing(9)
-        effect_grid.setVerticalSpacing(9)
-        more_grid = QGridLayout()
-        more_grid.setContentsMargins(0, 0, 0, 0)
-        more_grid.setHorizontalSpacing(9)
-        more_grid.setVerticalSpacing(9)
-        self.more_effects = QWidget()
-        self.more_effects.setLayout(more_grid)
+        category_row = QGridLayout()
+        category_row.setHorizontalSpacing(9)
+        category_row.setVerticalSpacing(9)
+        self.category_buttons = {}
+        self.category_panels = {}
+        category_grids = {}
+        for index, (category, title, subtitle) in enumerate(CATEGORIES):
+            count = sum(EFFECT_CATEGORY[item[0]] == category for item in EFFECTS)
+            button = QPushButton(f"{title}  {count}")
+            button.setObjectName("categoryChoice")
+            button.setCheckable(True)
+            button.setAccessibleName(f"{title}，{count} 种，点击展开或收起")
+            button.setToolTip(subtitle)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setIconSize(QSize(16, 16))
+            button.clicked.connect(lambda _checked=False, chosen=category:
+                                   self._toggle_category(chosen))
+            category_row.addWidget(button, 0, index)
+            self.category_buttons[category] = button
+        effects_layout.addLayout(category_row)
+        for category, title, subtitle in CATEGORIES:
+            panel = QWidget()
+            grid = QGridLayout(panel)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(9)
+            grid.setVerticalSpacing(9)
+            self.category_panels[category] = panel
+            category_grids[category] = grid
+            effects_layout.addWidget(panel)
         self.effect_buttons = {}
-        for index, (effect_id, title, description) in enumerate(EFFECTS):
+        category_positions = {category: 0 for category, _, _ in CATEGORIES}
+        for effect_id, title, description in EFFECTS:
             button = QPushButton(f"{title}\n{description}")
             button.setObjectName("effectChoice")
             button.setCheckable(True)
@@ -396,12 +416,21 @@ class MainWindow(QMainWindow):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _checked=False, chosen=effect_id:
                                    self._select_effect(chosen))
-            target_grid = effect_grid if index < 6 else more_grid
-            position = index if index < 6 else index - 6
-            target_grid.addWidget(button, position // 3, position % 3)
+            category = EFFECT_CATEGORY[effect_id]
+            position = category_positions[category]
+            category_positions[category] += 1
+            category_grids[category].addWidget(button, position // 3, position % 3)
             self.effect_buttons[effect_id] = button
-        effects_layout.addLayout(effect_grid)
-        effects_layout.addWidget(self.more_effects)
+        self.music_status = QLabel("读取电脑默认播放设备的音量；不会录制或保存声音")
+        self.music_status.setObjectName("hint")
+        self.music_status.setWordWrap(True)
+        music_status_row = QHBoxLayout()
+        music_status_row.addWidget(self.music_status, 1)
+        self.audio_refresh = QPushButton("刷新音频设备")
+        self.audio_refresh.setObjectName("quiet")
+        self.audio_refresh.clicked.connect(self._refresh_audio_device)
+        music_status_row.addWidget(self.audio_refresh)
+        effects_layout.addLayout(music_status_row)
         self._refresh_gallery()
 
         colors_layout = effects_layout
@@ -837,6 +866,12 @@ class MainWindow(QMainWindow):
             self.connection_detail.setText("连接中断，正在重新寻找键盘")
             self.retry_timer.start()
         self.preview.update()
+        if self.gallery_category == "music":
+            meter = self.engine.audio_meter
+            self.music_status.setText(
+                "系统播放音量已接入 · 不录制或保存声音" if meter.available else
+                "等待默认播放设备的声音；请播放音乐后查看灯光变化" if not meter.error else
+                f"音频暂不可用：{meter.error}")
 
     def _set_status(self, text, kind):
         self.status.setText(text)
@@ -892,14 +927,22 @@ class MainWindow(QMainWindow):
         title = next(title for effect_id, title, _ in EFFECTS
                      if effect_id == self.engine.effect)
         self.gallery_selection.setText(f"当前 · {title}")
-        self.gallery_toggle.setText(
-            "收起灯效" if self.gallery_expanded
-            else f"查看全部 {len(EFFECTS)} 种")
-        self.gallery_toggle.setIcon(chevron_icon(up=self.gallery_expanded))
-        self.more_effects.setVisible(self.gallery_expanded)
+        for category, category_title, _ in CATEGORIES:
+            open_now = category == self.gallery_category
+            button = self.category_buttons[category]
+            button.setChecked(open_now)
+            button.setIcon(chevron_icon(up=open_now))
+            self.category_panels[category].setVisible(open_now)
+        self.music_status.setVisible(self.gallery_category == "music")
+        self.audio_refresh.setVisible(self.gallery_category == "music")
 
-    def _toggle_gallery(self):
-        self.gallery_expanded = not self.gallery_expanded
+    def _refresh_audio_device(self):
+        self.engine.audio_meter.close()
+        self.engine.audio_meter.retry_after = 0.0
+        self.music_status.setText("正在连接系统默认播放设备…")
+
+    def _toggle_category(self, category):
+        self.gallery_category = None if self.gallery_category == category else category
         self._refresh_gallery()
         self._save_settings()
 
@@ -908,6 +951,8 @@ class MainWindow(QMainWindow):
             hint = "波纹色就是按键后扩散的颜色，默认黑色；打开色盘即可实时调整。"
         elif self.engine.effect == "solid":
             hint = "全键常亮只使用底色。"
+        elif self.engine.effect in MUSIC:
+            hint = "灯光跟随系统默认播放设备的音量；可分别调整底色和点缀色。"
         else:
             hint = "点击色块打开 RGB 色盘；每款灯效会记住自己的配色。"
         self.palette_hint.setText(hint)
@@ -934,6 +979,15 @@ class MainWindow(QMainWindow):
             "收起适配资料" if expanded else "＋  提供其他键盘的适配资料")
 
     def _require_setup(self):
+        try:
+            detected = preferred_known_keyboard(detect_keyboards(), self.engine.preference)
+        except OSError as error:
+            LOG.warning("Keyboard identity scan failed: %s", error)
+            detected = None
+        if detected:
+            LOG.info("Known keyboard auto-detected: %s:%s", detected["vid"], detected["pid"])
+            self._apply_device_profile({key: detected[key] for key in ("model", "vid", "pid")})
+            return
         dialog = DeviceSetupDialog(DATA_DIR, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._apply_device_profile(dialog.result_profile)
@@ -1147,7 +1201,7 @@ class MainWindow(QMainWindow):
                     effect_id: {"base": color_hex(palette[0]),
                                 "accent": color_hex(palette[1])}
                     for effect_id, palette in self.effect_palettes.items()},
-                "gallery_expanded": self.gallery_expanded,
+                "gallery_category": self.gallery_category,
                 "brightness": self.engine.brightness,
                 "speed": self.engine.speed,
                 "ripple_width": self.engine.ripple_width,
