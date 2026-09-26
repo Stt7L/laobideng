@@ -1,0 +1,1 @@
+PySide6-Addons==6.11.2

@@ -1,0 +1,17 @@
+.venv/
+build/
+dist/
+release/
+__pycache__/
+*.pyc
+*.spec
+runtime.log*
+probe.log
+settings.json
+preview-*.png
+video-frames*/
+probe_*.py
+calibrate_led.py
+*.zip
+*.exe
+.finesse/
