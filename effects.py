@@ -41,45 +41,34 @@ EFFECTS = (
     ("audio_meter", "音量刻度", "灯光长度跟随播放音量"),
     ("audio_flash", "重拍闪光", "强音到来时短促闪亮"),
     ("audio_spectrum", "三频跃动", "低频、中频和高频分区起伏"),
-    ("audio_ecg", "心电律动", "音乐绘成滚动心电线，鼓点让爱心跳动"),
+    ("audio_ecg", "心电波", "稳定滚动的音乐心电线"),
+    ("custom_ecg", "自绘心跳", "点击键位画出图案，让鼓点带它跳动"),
+    ("custom_canvas", "逐键画布", "选择键位自由绘制双色图案"),
+    ("custom_sparkle", "自绘星图", "让你画出的键位依次闪亮"),
 )
 EFFECT_IDS = {item[0] for item in EFFECTS}
 REACTIVE = {"ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
             "key_rain", "heatmap", "key_cross", "key_sparks"}
 MUSIC = {"audio_pulse", "audio_wave", "audio_ribbon", "audio_stars",
-         "audio_meter", "audio_flash", "audio_spectrum", "audio_ecg"}
+         "audio_meter", "audio_flash", "audio_spectrum", "audio_ecg",
+         "custom_ecg"}
+CUSTOM = {"custom_ecg", "custom_canvas", "custom_sparkle"}
 WIDTH_EFFECTS = {
     "rainbow", "aurora", "meteor", "rain", "spiral", "gradient_wave",
     "visor", "bubbles", "breathing_circle", "cross_beams", "comet",
     "ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
     "key_rain", "heatmap", "key_cross", "key_sparks",
     "audio_wave", "audio_ribbon", "audio_meter", "audio_spectrum",
-    "audio_ecg",
+    "audio_ecg", "custom_ecg",
 }
 CATEGORIES = (
     ("regular", "常规灯效", "持续流动与氛围"),
     ("reactive", "互动灯效", "跟随你的每次按键"),
     ("music", "音乐交互", "响应电脑正在播放的声音"),
+    ("custom", "自定义灯效", "在键位预览中绘制你的图案"),
 )
-# The static music image spans the main key block.  Its negative space stays
-# white; Backspace and backslash form a visible white boundary on the right.
-HEART_PATH = (
-    (435, 243), (385, 224), (300, 205), (225, 178),
-    (185, 145), (190, 106), (235, 70), (292, 53),
-    (352, 66), (408, 115), (435, 135),
-    (465, 103), (515, 64), (572, 53), (626, 68),
-    (657, 104), (657, 142), (622, 177), (540, 214),
-    (435, 243),
-)
-HEART_WHITE_KEYS = {"Backspace", "\\"}
-HEART_PIXEL_KEYS = {
-    "F4", "F5", "F6", "F9", "F10", "F11",
-    "5", "6", "7", "8", "0", "-_", "=+",
-    "R", "T", "Y", "U", "I", "O", "P", "[", "]",
-    "G", "H", "J", "K", "L", ";", "'",
-    "N", "M", ",", ".", "/",
-}
-EFFECT_CATEGORY = {effect_id: ("music" if effect_id in MUSIC else
+EFFECT_CATEGORY = {effect_id: ("custom" if effect_id in CUSTOM else
+                               "music" if effect_id in MUSIC else
                                "reactive" if effect_id in REACTIVE else "regular")
                    for effect_id in EFFECT_IDS}
 
@@ -151,18 +140,10 @@ def ecg_trace_at(samples, times, target_time):
     return previous_value + (next_value - previous_value) * fraction
 
 
-def inside_polygon(x, y, points):
-    inside = False
-    for index, (x1, y1) in enumerate(points[:-1]):
-        x2, y2 = points[index + 1]
-        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
-            inside = not inside
-    return inside
-
-
 def render(effect, now, base, accent, brightness, speed, events,
            ripple_width=1.0, audio_level=0.0, audio_beats=(),
-           audio_impact=0.0, audio_bands=(), audio_trace=()):
+           audio_impact=0.0, audio_bands=(), audio_trace=(),
+           custom_heart_keys=(), custom_canvas_keys=()):
     """Return one RGB color per supported LED, indexed by physical LED ID."""
     result = [(0, 0, 0)] * max(105, max(LED_CENTERS, default=0) + 1)
     t = now * max(0.2, speed)
@@ -180,21 +161,27 @@ def render(effect, now, base, accent, brightness, speed, events,
         beat_energy = max((math.exp(-(now - started) / 0.18)
                            for started in audio_beats
                            if 0 <= now - started < 0.9), default=0.0)
-    trace_times = [sample[0] for sample in audio_trace] if effect == "audio_ecg" else ()
+    ecg_effect = effect in {"audio_ecg", "custom_ecg"}
+    trace_times = [sample[0] for sample in audio_trace] if ecg_effect else ()
     heart_beat = (max((math.exp(-(now - started) / 0.32)
                        for started in audio_beats
                        if 0 <= now - started < 1.25), default=0.0)
-                  if effect == "audio_ecg" else 0.0)
-    heart_white_leds = ({led for cap in KEYCAPS
-                         if cap.name in HEART_WHITE_KEYS
-                         for led in cap.leds} if effect == "audio_ecg" else set())
-    heart_leds = ({led for cap in KEYCAPS
-                   if cap.name in HEART_PIXEL_KEYS
-                   for led in cap.leds} |
-                  {cap.leds[-1] for cap in KEYCAPS
-                   if cap.name == "Space" and cap.leds}
-                  if effect == "audio_ecg" else set())
-    white_lit = scale((255, 255, 255), brightness) if effect == "audio_ecg" else None
+                  if effect == "custom_ecg" else 0.0)
+    painted_caps = ([cap for cap in KEYCAPS if cap.name in custom_heart_keys]
+                    if effect == "custom_ecg" else [])
+    heart_leds = {led for cap in painted_caps for led in cap.leds}
+    # The ECG trace runs behind the user's artwork.  Reserving the selected
+    # key area also keeps the line out of intentional gaps inside a shape.
+    motif_bounds = ((min(cap.x for cap in painted_caps),
+                     min(cap.y for cap in painted_caps),
+                     max(cap.x + cap.w for cap in painted_caps),
+                     max(cap.y + cap.h for cap in painted_caps))
+                    if painted_caps else None)
+    canvas_leds = ({led for cap in KEYCAPS
+                    if cap.name in custom_canvas_keys
+                    for led in cap.leds}
+                   if effect in {"custom_canvas", "custom_sparkle"} else set())
+    white_lit = scale((255, 255, 255), brightness) if ecg_effect else None
     width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
@@ -359,8 +346,18 @@ def render(effect, now, base, accent, brightness, speed, events,
             crest = math.exp(-((y - height) / (48 * width)) ** 2) * band
             color = mix(scale(base_lit, 0.18), accent_lit,
                         min(1.0, fill * 0.82 + crest * 0.18))
-        elif effect == "audio_ecg":
-            color = white_lit
+        elif effect == "custom_canvas":
+            color = accent_lit if led in canvas_leds else base_lit
+        elif effect == "custom_sparkle":
+            if led in canvas_leds:
+                step = int(t * 2.1)
+                phase = (t * 2.1) % 1
+                seed = noise(led * 67 + step * 23)
+                glow = max(0.0, (seed - 0.62) / 0.38) * math.sin(math.pi * phase)
+                color = mix(base_lit, accent_lit, 0.18 + 0.82 * glow)
+            else:
+                color = base_lit
+        elif ecg_effect:
             # Draw a connected waveform across the whole board.  The segment
             # spans adjacent key columns so a rising note does not turn into
             # isolated specks when the sampled heights differ.
@@ -373,25 +370,21 @@ def render(effect, now, base, accent, brightness, speed, events,
                                         x + 23, wave_height(x + 23))
             thickness = 10 + 5 * width
             moving_line = math.exp(-((distance / thickness) ** 2))
-            resting_line = 0.05 * math.exp(-(((y - 198) / 20) ** 2))
-            line_gain = min(1.0, audio_level * 6.0 + beat_energy * 0.2)
-            line = max(resting_line, moving_line * line_gain)
-            if led in heart_white_leds:
-                color = white_lit
-            elif led in heart_leds:
-                heart_color = mix(base_lit, accent_lit,
-                                  smoothstep(265, 580, x))
-                color = scale(heart_color, 0.78 + 0.22 * heart_beat)
-            elif inside_polygon(x, y, HEART_PATH):
-                color = white_lit
-            else:
-                color = mix(white_lit, base_lit, line)
+            resting_line = 0.19 * math.exp(-(((y - 198) / 20) ** 2))
+            line = max(resting_line, moving_line)
+            inside_artwork = (motif_bounds is not None and
+                              motif_bounds[0] <= x <= motif_bounds[2] and
+                              motif_bounds[1] <= y <= motif_bounds[3])
+            color = (scale(accent_lit, 0.64 + 0.36 * heart_beat)
+                     if led in heart_leds else
+                     white_lit if inside_artwork else
+                     mix(white_lit, base_lit, line))
         else:
             color = base_lit
 
         if effect in MUSIC:
             # Keep the ring and heart shapes distinct from the shared beat tint.
-            beat_gain = (0.0 if effect == "audio_ecg" else
+            beat_gain = (0.0 if ecg_effect else
                          0.10 if effect == "audio_wave" else 0.28)
             color = mix(color, accent_lit, beat_energy * beat_gain)
 

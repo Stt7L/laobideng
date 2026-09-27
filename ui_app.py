@@ -11,7 +11,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl
+from PySide6.QtCore import Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -175,11 +175,94 @@ class FineSlider(QSlider):
 
 
 class KeyboardPreview(QWidget):
+    keyEdited = Signal(str, bool)
+    editFinished = Signal()
+
     def __init__(self, engine, parent=None):
         super().__init__(parent)
         self.engine = engine
         self.setMinimumHeight(275)
         self.setAccessibleName("键盘灯效预览")
+        self.setMouseTracking(True)
+        self._brush = None
+        self._hover_key = None
+
+    def _editable(self):
+        return self.engine.effect in ("custom_ecg", "custom_canvas", "custom_sparkle")
+
+    def _selected_keys(self):
+        if self.engine.effect == "custom_ecg":
+            return self.engine.custom_heart_keys
+        return self.engine.custom_canvas_keys
+
+    def _transform(self):
+        scale = min((self.width() - 28) / 790, (self.height() - 62) / 270)
+        x0 = (self.width() - 790 * scale) / 2
+        y0 = 42 + (self.height() - 52 - 270 * scale) / 2
+        return scale, x0, y0
+
+    def _key_at(self, position):
+        scale, x0, y0 = self._transform()
+        if scale <= 0:
+            return None
+        point = QPointF((position.x() - x0) / scale,
+                        (position.y() - y0) / scale)
+        for cap in KEYCAPS:
+            if QRectF(cap.x - 48, cap.y - 43, cap.w, cap.h).contains(point):
+                return cap.name if cap.leds else None
+        return None
+
+    def _paint_key_at(self, position):
+        name = self._key_at(position)
+        if name is not None:
+            self.keyEdited.emit(name, self._brush)
+
+    def mousePressEvent(self, event):
+        if self._editable() and event.button() in (Qt.MouseButton.LeftButton,
+                                                     Qt.MouseButton.RightButton):
+            name = self._key_at(event.position())
+            if name is not None:
+                self._brush = (name not in self._selected_keys()
+                               if event.button() == Qt.MouseButton.LeftButton else False)
+                self._paint_key_at(event.position())
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._editable():
+            if self._brush is not None and not event.buttons():
+                self._brush = None
+                self.editFinished.emit()
+            hovered = self._key_at(event.position())
+            if hovered != self._hover_key:
+                self._hover_key = hovered
+                self.setCursor(Qt.CursorShape.CrossCursor if hovered else
+                               Qt.CursorShape.ArrowCursor)
+                self.update()
+            if self._brush is not None:
+                self._paint_key_at(event.position())
+                event.accept()
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._brush is not None and event.button() in (Qt.MouseButton.LeftButton,
+                                                           Qt.MouseButton.RightButton):
+            self._brush = None
+            self.editFinished.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        if self._brush is not None:
+            self._brush = None
+            self.editFinished.emit()
+        self._hover_key = None
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+        super().leaveEvent(event)
 
     def paintEvent(self, _event):
         painter = QPainter(self)
@@ -192,11 +275,11 @@ class KeyboardPreview(QWidget):
         painter.drawText(20, 30, f"{getattr(self, 'model', 'V98 Pro')}  /  键位预览")
         painter.setPen(QColor("#9AAA97"))
         painter.setFont(QFont("Microsoft YaHei UI", 9))
-        painter.drawText(self.width() - 166, 30, f"实时灯效 · {len(KEYCAPS)} 键")
+        painter.drawText(self.width() - 166, 30,
+                         "点按切换 · 拖动连画" if self._editable() else
+                         f"实时灯效 · {len(KEYCAPS)} 键")
 
-        scale = min((self.width() - 28) / 790, (self.height() - 62) / 270)
-        x0 = (self.width() - 790 * scale) / 2
-        y0 = 42 + (self.height() - 52 - 270 * scale) / 2
+        scale, x0, y0 = self._transform()
         painter.save()
         painter.translate(x0, y0)
         painter.scale(scale, scale)
@@ -214,15 +297,22 @@ class KeyboardPreview(QWidget):
             rgb = tuple(round(sum(color[i] for color in colors) / len(colors))
                         for i in range(3)) if colors else (40, 46, 40)
             lit = QColor(*rgb)
-            light_share = 0.86 if self.engine.effect == "audio_ecg" else 0.62
+            light_share = 0.86 if self.engine.effect in ("audio_ecg", "custom_ecg",
+                                                         "custom_canvas",
+                                                         "custom_sparkle") else 0.62
             surface = QColor(*(round(34 * (1 - light_share) + c * light_share)
                                for c in rgb))
-            painter.setPen(QPen(lit.lighter(125), 1.2))
+            painter.setPen(QPen(QColor("#C4EF70") if self._editable() and
+                                cap.name == self._hover_key else lit.lighter(125),
+                                2 if self._editable() and cap.name == self._hover_key
+                                else 1.2))
             key_rect = QRectF(cx, cy, cw, ch)
             led_segments = sorted((LED_CENTERS[led][0], frame[led])
                                   for led in cap.leds
                                   if led in LED_CENTERS and led < len(frame))
-            if len(led_segments) > 1 and led_segments[-1][0] - led_segments[0][0] > 5:
+            if (cap.name not in ("Space", "Enter", "Num Enter") and
+                    len(led_segments) > 1 and
+                    led_segments[-1][0] - led_segments[0][0] > 5):
                 clip = QPainterPath()
                 clip.addRoundedRect(key_rect, 5, 5)
                 painter.save()
@@ -277,6 +367,14 @@ class MainWindow(QMainWindow):
             self.settings.get("ripple_width"), 0.5, 2.0, 1.0)
         self.engine.ripples_enabled = bool(self.settings.get("active", True))
         self.engine.effect = self.settings.get("effect") if self.settings.get("effect") in EFFECT_IDS else "ripple"
+        available_keys = {cap.name for cap in KEYCAPS if cap.leds}
+        for setting, attribute in (("custom_heart_keys", "custom_heart_keys"),
+                                   ("custom_canvas_keys", "custom_canvas_keys")):
+            saved_keys = self.settings.get(setting, [])
+            setattr(self.engine, attribute,
+                    set(saved_keys) & available_keys
+                    if isinstance(saved_keys, list) else set())
+        self._custom_stroke_open = False
         self.effect_palettes = {}
         saved_palettes = self.settings.get("effect_palettes", {})
         if isinstance(saved_palettes, dict):
@@ -390,7 +488,31 @@ class MainWindow(QMainWindow):
 
         self.preview = KeyboardPreview(self.engine)
         self.preview.model = self.profile.get("model", "V98 Pro") if self.profile else "V98 Pro"
+        self.preview.keyEdited.connect(self._edit_custom_key)
+        self.preview.editFinished.connect(self._custom_stroke_finished)
         layout.addWidget(self.preview)
+
+        self.custom_editor_card, custom_layout = self._card("逐键绘制")
+        self.custom_editor_hint = QLabel()
+        self.custom_editor_hint.setObjectName("hint")
+        self.custom_editor_hint.setWordWrap(True)
+        custom_layout.addWidget(self.custom_editor_hint)
+        custom_actions = QHBoxLayout()
+        custom_actions.setSpacing(9)
+        for text, handler, style in (("清空画布", self._clear_custom_keys, "secondary"),
+                                     ("全部点亮", self._fill_custom_keys, "secondary"),
+                                     ("保存图案", self._save_custom_keys, "primary")):
+            button = QPushButton(text)
+            button.setObjectName(style)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(handler)
+            custom_actions.addWidget(button, 1)
+        custom_layout.addLayout(custom_actions)
+        self.custom_editor_status = QLabel()
+        self.custom_editor_status.setObjectName("muted")
+        custom_layout.addWidget(self.custom_editor_status)
+        layout.addWidget(self.custom_editor_card)
+        self._refresh_custom_editor()
 
         effects_card, effects_layout = self._card("灯效画廊")
         effects_hint = QLabel("每款灯效独立保存配色 · 点击分类按钮展开或收起")
@@ -419,8 +541,10 @@ class MainWindow(QMainWindow):
             button.setIconSize(QSize(16, 16))
             button.clicked.connect(lambda _checked=False, chosen=category:
                                    self._toggle_category(chosen))
-            category_row.addWidget(button, 0, index)
+            category_row.addWidget(button, index // 2, index % 2)
             self.category_buttons[category] = button
+        category_row.setColumnStretch(0, 1)
+        category_row.setColumnStretch(1, 1)
         effects_layout.addLayout(category_row)
         for category, title, subtitle in CATEGORIES:
             panel = QWidget()
@@ -898,7 +1022,7 @@ class MainWindow(QMainWindow):
             self.connection_detail.setText("连接中断，正在重新寻找键盘")
             self.retry_timer.start()
         self.preview.update()
-        if self.gallery_category == "music":
+        if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
             self.music_status.setText(
                 "播放设备已接入 · 低频 / 中频 / 高频实时响应 · 不保存声音"
@@ -935,6 +1059,79 @@ class MainWindow(QMainWindow):
                              "running" if active else "paused")
         self._save_settings()
 
+    def _custom_key_set(self):
+        if self.engine.effect == "custom_ecg":
+            return self.engine.custom_heart_keys
+        if self.engine.effect in ("custom_canvas", "custom_sparkle"):
+            return self.engine.custom_canvas_keys
+        return None
+
+    def _refresh_custom_editor(self):
+        selected = self._custom_key_set()
+        self.custom_editor_card.setVisible(selected is not None)
+        if selected is None:
+            self.preview._hover_key = None
+            self.preview.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        if self.engine.effect == "custom_ecg":
+            hint = "心电线由音乐生成。左键点按切换爱心键，拖动会沿用起点的涂画或擦除；右键始终擦除。未选键保持白色。"
+        elif self.engine.effect == "custom_sparkle":
+            hint = "左键点按切换闪烁键，拖动会沿用起点的涂画或擦除；右键始终擦除。其余键保持底色。"
+        else:
+            hint = "左键点按切换点缀色，拖动会沿用起点的涂画或擦除；右键始终擦除。其余键保持底色。"
+        self.custom_editor_hint.setText(hint + " 无可控灯位的按键无法涂画。")
+        self.custom_editor_status.setText(
+            f"已选 {len(selected)} 键 · 绘制完成后自动保存")
+
+    def _edit_custom_key(self, name, enabled):
+        selected = self._custom_key_set()
+        if selected is None or (name in selected) == enabled:
+            return
+        self._custom_stroke_open = True
+        if enabled:
+            selected.add(name)
+        else:
+            selected.discard(name)
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
+        self._refresh_custom_editor()
+
+    def _custom_stroke_finished(self):
+        if self._custom_stroke_open:
+            self._custom_stroke_open = False
+            self._save_settings()
+
+    def _clear_custom_keys(self):
+        selected = self._custom_key_set()
+        if selected is None or not selected:
+            return
+        selected.clear()
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
+        self._refresh_custom_editor()
+        self._save_settings()
+
+    def _fill_custom_keys(self):
+        selected = self._custom_key_set()
+        if selected is None:
+            return
+        available = {cap.name for cap in KEYCAPS if cap.leds}
+        if selected == available:
+            return
+        selected.clear()
+        selected.update(available)
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
+        self._refresh_custom_editor()
+        self._save_settings()
+
+    def _save_custom_keys(self):
+        if self._custom_key_set() is None:
+            return
+        self._save_settings()
+        self.custom_editor_status.setText(
+            f"已保存 · 当前选择 {len(self._custom_key_set())} 个键位")
+
     def _select_effect(self, effect):
         if effect == self.engine.effect:
             return
@@ -942,8 +1139,10 @@ class MainWindow(QMainWindow):
         self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
         palette = self.effect_palettes.get(effect)
         if palette is None:
-            if effect == "audio_ecg":
+            if effect in ("audio_ecg", "custom_ecg"):
                 palette = ((255, 81, 177), (255, 64, 91))
+            elif effect in ("custom_canvas", "custom_sparkle"):
+                palette = ((255, 255, 255), (255, 64, 91))
             else:
                 accent = (self.engine.accent if self.engine.accent != (0, 0, 0)
                           or effect == "ripple" else (196, 239, 112))
@@ -957,9 +1156,13 @@ class MainWindow(QMainWindow):
         self._update_color_buttons()
         self._update_palette_hint()
         self._refresh_gallery()
+        self._refresh_custom_editor()
         self.engine.last_frame = self.engine.frame(time.perf_counter())
         self.preview.update()
         self._save_settings()
+        if self._custom_key_set() is not None:
+            QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(
+                self.custom_editor_card))
 
     def _refresh_gallery(self):
         title = next(title for effect_id, title, _ in EFFECTS
@@ -971,8 +1174,10 @@ class MainWindow(QMainWindow):
             button.setChecked(open_now)
             button.setIcon(chevron_icon(up=open_now))
             self.category_panels[category].setVisible(open_now)
-        self.music_status.setVisible(self.gallery_category == "music")
-        self.audio_refresh.setVisible(self.gallery_category == "music")
+        audio_visible = (self.gallery_category == "music" or
+                         self.engine.effect == "custom_ecg")
+        self.music_status.setVisible(audio_visible)
+        self.audio_refresh.setVisible(audio_visible)
 
     def _refresh_audio_device(self):
         self.engine.audio_meter.refresh()
@@ -987,7 +1192,11 @@ class MainWindow(QMainWindow):
         if self.engine.effect == "ripple":
             hint = "波纹色就是按键后扩散的颜色，默认黑色；打开色盘即可实时调整。"
         elif self.engine.effect == "audio_ecg":
-            hint = "心电线记录音乐起伏，爱心随鼓点跳动；两种颜色都能自由调整。"
+            hint = "心电线跟随音乐起伏，按键预览保持只读。想自己画爱心，请选择自定义灯效中的「自绘心跳」。"
+        elif self.engine.effect == "custom_ecg":
+            hint = "心电线由音乐驱动；在上方键位预览点选爱心键，鼓点会让它们跳动。"
+        elif self.engine.effect in ("custom_canvas", "custom_sparkle"):
+            hint = "在上方键位预览涂画；底色和所选键的点缀色可分别调整。"
         elif self.engine.effect == "solid":
             hint = "全键常亮只使用底色。"
         elif self.engine.effect in MUSIC:
@@ -1134,13 +1343,14 @@ class MainWindow(QMainWindow):
             self.save_timer.start()
 
     def _update_color_buttons(self):
-        base_label = "心电线" if self.engine.effect == "audio_ecg" else "底色"
-        accent_label = ("爱心色" if self.engine.effect == "audio_ecg" else
+        base_label = "心电线" if self.engine.effect in ("audio_ecg", "custom_ecg") else "底色"
+        accent_label = ("爱心色" if self.engine.effect == "custom_ecg" else
                         "波纹色" if self.engine.effect == "ripple" else "点缀色")
         for button, label, value in ((self.base_button, base_label, self.engine.base),
                                      (self.accent_button, accent_label, self.engine.accent)):
             button.setIcon(swatch_icon(value))
             button.setText(f"{label}    {color_hex(value)}")
+        self.accent_button.setVisible(self.engine.effect not in ("audio_ecg", "solid"))
 
     def _open_color_editor(self, target):
         if self.editing_color is not None:
@@ -1149,9 +1359,10 @@ class MainWindow(QMainWindow):
         self.editing_color = target
         self.editing_original = (self.engine.base, self.engine.accent)
         self.editor_title.setText(
-            "修改心电线颜色" if target == "base" and self.engine.effect == "audio_ecg" else
+            "修改心电线颜色" if target == "base" and self.engine.effect in
+            ("audio_ecg", "custom_ecg") else
             "修改底色" if target == "base" else
-            "修改爱心颜色" if self.engine.effect == "audio_ecg" else
+            "修改爱心颜色" if self.engine.effect == "custom_ecg" else
             "修改波纹色" if self.engine.effect == "ripple" else "修改点缀色")
         self.hex_input.setText(color_hex(self.engine.base if target == "base"
                                          else self.engine.accent))
@@ -1245,6 +1456,8 @@ class MainWindow(QMainWindow):
                                 "accent": color_hex(palette[1])}
                     for effect_id, palette in self.effect_palettes.items()},
                 "gallery_category": self.gallery_category,
+                "custom_heart_keys": sorted(self.engine.custom_heart_keys),
+                "custom_canvas_keys": sorted(self.engine.custom_canvas_keys),
                 "brightness": self.engine.brightness,
                 "speed": self.engine.speed,
                 "ripple_width": self.engine.ripple_width,

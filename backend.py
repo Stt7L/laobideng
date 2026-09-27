@@ -219,7 +219,10 @@ def make_key_map():
             x, y = coords[i]
             first[name] = (led, x, y)
     for name, (x, y) in NAME_CENTERS.items():
-        first[name] = (NAME_LEDS[name], x, y)
+        if name in NAME_LEDS:
+            first[name] = (NAME_LEDS[name], x, y)
+        else:
+            first.pop(name, None)
     return first
 
 
@@ -343,6 +346,8 @@ class LightingController:
         self.brightness = 0.65
         self.speed = 1.0
         self.ripple_width = 1.0
+        self.custom_heart_keys = set()
+        self.custom_canvas_keys = set()
         self.ripples_enabled = True
         self.last_frame = [self.base_color()] * MAX_LED
 
@@ -535,10 +540,11 @@ class LightingController:
                 self.audio_beats.append(now)
                 self.audio_last_beat = now
             trace_lifetime = max(2.2, 2.2 / max(0.45, self.speed))
-            beat_lifetime = trace_lifetime if self.effect == "audio_ecg" else 1.6
+            beat_lifetime = (trace_lifetime if self.effect in {"audio_ecg", "custom_ecg"}
+                             else 1.6)
             self.audio_beats = [started for started in self.audio_beats
                                 if now - started < beat_lifetime][-24:]
-            if self.effect == "audio_ecg":
+            if self.effect in {"audio_ecg", "custom_ecg"}:
                 bass, middle, treble = self.audio_meter.bands
                 raw = (self.audio_level * 0.35 + bass * 0.40 +
                        middle * 0.20 + treble * 0.05)
@@ -588,10 +594,11 @@ class LightingController:
                         self.brightness, self.speed, self.ripples,
                         self.ripple_width, self.audio_level, self.audio_beats,
                         self.audio_meter.impact, self.audio_meter.bands,
-                        self.audio_trace)
+                        self.audio_trace, self.custom_heart_keys,
+                        self.custom_canvas_keys)
         # Moving one-key-wide graphics must clear their previous positions in
         # the same frame; the shared music decay otherwise paints a wide trail.
-        if self.effect not in MUSIC or self.effect == "audio_ecg":
+        if self.effect not in MUSIC or self.effect in {"audio_ecg", "custom_ecg"}:
             return target
         if self.music_frame is None or len(self.music_frame) != len(target):
             self.music_frame = target

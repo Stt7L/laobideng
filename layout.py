@@ -108,7 +108,8 @@ NAME_CENTERS = {}
 NAME_LEDS = {}
 for cap in KEYCAPS:
     NAME_CENTERS[cap.name] = cap.center
-    NAME_LEDS[cap.name] = cap.leds[0]
+    if cap.leds:
+        NAME_LEDS[cap.name] = cap.leds[0]
     for led in cap.leds:
         LED_CENTERS[led] = cap.center
 
