@@ -211,30 +211,30 @@ def render(effect, now, base, accent, brightness, speed, events,
                                 (100 * width)) ** 2)
             color = mix(scale(base_lit, 0.2), accent_lit, glow)
         elif effect == "audio_pulse":
-            pulse = min(1.0, bass * 0.50 + middle * 0.24 +
-                        audio_level * 0.16 + audio_impact * 0.28)
-            color = mix(scale(base_lit, 0.20), accent_lit, pulse)
+            pulse = min(1.0, bass * 0.30 + middle * 0.11 +
+                        audio_level * 0.12 + audio_impact * 0.55)
+            color = mix(scale(base_lit, 0.16), accent_lit, pulse)
         elif effect == "audio_wave":
             distance = math.hypot(x - 441, y - 175)
-            # A quiet travelling ring remains visible between detected beats.
-            # This also gives non-percussive music a continuous response.
+            # Keep the background movement understated so each kick reads as
+            # a distinct travelling ring rather than a constant flicker.
             flow = 0.5 + 0.5 * math.cos(distance / (53 * width) - t * 3.8)
-            glow = audio_level * 0.05 + middle * flow * 0.18
+            glow = audio_level * 0.02 + middle * flow * 0.07
             for started in audio_beats:
                 age = now - started
                 if 0 <= age < 1.5:
                     front = age * 440 * speed
-                    ring = math.exp(-((distance - front) / (52 * width)) ** 2)
-                    envelope = min(1.0, age / 0.06) * (1 - age / 1.5) ** 0.55
+                    ring = math.exp(-((distance - front) / (48 * width)) ** 2)
+                    envelope = min(1.0, age / 0.018) * (1 - age / 1.5) ** 0.40
                     glow = max(glow, ring * envelope)
-            color = mix(scale(base_lit, 0.30), accent_lit, glow)
+            color = mix(scale(base_lit, 0.18), accent_lit, glow)
         elif effect == "audio_ribbon":
             center = 173 + math.sin(x / 92 - t * 3.0) * (
-                13 + bass * 104)
+                13 + bass * 70)
             ribbon = math.exp(-((y - center) / (36 * width)) ** 2)
             shimmer = 0.70 + 0.30 * math.sin(x / 47 + t * 3.5)
-            glow = ribbon * shimmer * min(1.0, 0.12 + middle * 0.58 +
-                                           treble * 0.24 + audio_impact * 0.18)
+            glow = ribbon * shimmer * min(1.0, 0.08 + middle * 0.36 +
+                                           treble * 0.18 + audio_impact * 0.38)
             color = mix(scale(base_lit, 0.28), accent_lit, glow)
         elif effect == "audio_stars":
             step = int(t * 2.7)
@@ -246,8 +246,8 @@ def render(effect, now, base, accent, brightness, speed, events,
             color = mix(scale(base_lit, 0.24), accent_lit, glow)
         elif effect == "audio_meter":
             distance = abs(x - 441)
-            energy = min(1.0, bass * 0.40 + middle * 0.37 +
-                         audio_level * 0.23 + audio_impact * 0.13)
+            energy = min(1.0, bass * 0.27 + middle * 0.22 +
+                         audio_level * 0.12 + audio_impact * 0.43)
             edge = energy * 400
             fill = smoothstep(distance - 55 * width,
                               distance + 60 * width, edge)
@@ -255,13 +255,13 @@ def render(effect, now, base, accent, brightness, speed, events,
             color = mix(scale(base_lit, 0.24), accent_lit,
                         min(1.0, fill * 0.78 + marker * 0.22))
         elif effect == "audio_flash":
-            glow = max(bass * 0.10, audio_impact * 0.32)
+            glow = max(bass * 0.04, audio_impact * 0.28)
             for started in audio_beats:
                 age = now - started
                 if 0 <= age < 0.8:
-                    flash = (1 - math.exp(-age * 38)) * math.exp(-age * 5.2)
+                    flash = (1 - math.exp(-age * 85)) * math.exp(-age * 5.2)
                     glow = max(glow, flash)
-            color = mix(scale(base_lit, 0.30), accent_lit, glow)
+            color = mix(scale(base_lit, 0.18), accent_lit, glow)
         elif effect == "audio_spectrum":
             bass_to_mid = smoothstep(320 - 50 * width,
                                      320 + 50 * width, x)

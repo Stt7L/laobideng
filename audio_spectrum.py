@@ -69,12 +69,20 @@ class AudioSpectrum:
             smoothed = [0.0, 0.0, 0.0]
             bass_average = 0.0
             previous_bass = 0.0
+            fast_low = 0.0
+            fast_sub = 0.0
+            fast_average = 0.0
+            previous_fast = 0.0
+            last_fast_beat = 0.0
+            beat_pulse = 0.0
+            low_alpha = 2 * math.pi * 180 / (SAMPLE_RATE + 2 * math.pi * 180)
+            sub_alpha = 2 * math.pi * 35 / (SAMPLE_RATE + 2 * math.pi * 35)
             last_beat = 0.0
             beat_serial = self.beat_serial
             level = 0.0
             impact_envelope = 0.0
             with loopback.recorder(samplerate=SAMPLE_RATE,
-                                   blocksize=1024) as recorder:
+                                   blocksize=512) as recorder:
                 with self._lock:
                     self._connected = True
                     self.error = ""
@@ -90,6 +98,28 @@ class AudioSpectrum:
                         stop.wait(0.006)
                         continue
                     mono = np.asarray(data, dtype=np.float32).mean(axis=1)
+                    # Detect the kick from the newest ~10 ms of audio. Waiting
+                    # for the wider FFT window made the visible ring late.
+                    fast_energy = 0.0
+                    for value in mono:
+                        fast_low += low_alpha * (float(value) - fast_low)
+                        fast_sub += sub_alpha * (fast_low - fast_sub)
+                        filtered = fast_low - fast_sub
+                        fast_energy += filtered * filtered
+                    fast_bass = math.sqrt(fast_energy / len(mono))
+                    fast_impulse = max(0.0, (fast_bass - fast_average) /
+                                       max(0.001, fast_average))
+                    now = time.perf_counter()
+                    beat_pulse *= 0.82
+                    if (fast_bass > 0.006 and fast_impulse > 0.32 and
+                            fast_bass > previous_fast * 1.14 and
+                            now - last_beat > 0.23):
+                        beat_serial += 1
+                        last_fast_beat = last_beat = now
+                        beat_pulse = 1.0
+                    fast_average += (fast_bass - fast_average) * (
+                        0.07 if fast_bass > fast_average else 0.027)
+                    previous_fast = fast_bass
                     if len(mono) >= FFT_SIZE:
                         samples[:] = mono[-FFT_SIZE:]
                     else:
@@ -113,17 +143,19 @@ class AudioSpectrum:
                         (bass - bass_average) / max(0.0005, bass_average) * 0.85))
                     impact_envelope += (impulse - impact_envelope) * (
                         0.62 if impulse > impact_envelope else 0.15)
-                    now = time.perf_counter()
                     if (target_level > 0.12 and impulse > 0.22 and
                             bass > previous_bass * 1.10 and
-                            now - last_beat > 0.23):
+                            now - last_beat > 0.30 and
+                            now - last_fast_beat > 0.8):
                         beat_serial += 1
                         last_beat = now
+                        beat_pulse = 1.0
                     bass_average += (bass - bass_average) * (
                         0.065 if bass > bass_average else 0.025)
                     previous_bass = bass
                     with self._lock:
-                        self._snapshot = (level, tuple(smoothed), impact_envelope,
+                        self._snapshot = (level, tuple(smoothed),
+                                          max(impact_envelope * 0.45, beat_pulse),
                                           beat_serial, last_beat)
                     stop.wait(0.002)
         except Exception as exc:
