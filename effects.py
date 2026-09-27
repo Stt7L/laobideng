@@ -219,7 +219,7 @@ def render(effect, now, base, accent, brightness, speed, events,
             # A quiet travelling ring remains visible between detected beats.
             # This also gives non-percussive music a continuous response.
             flow = 0.5 + 0.5 * math.cos(distance / (53 * width) - t * 3.8)
-            glow = audio_level * 0.08 + middle * flow * 0.38
+            glow = audio_level * 0.05 + middle * flow * 0.18
             for started in audio_beats:
                 age = now - started
                 if 0 <= age < 1.5:

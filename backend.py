@@ -567,7 +567,7 @@ class LightingController:
             self.music_frame = target
         else:
             elapsed = max(0.0, min(0.25, now - self.music_frame_at))
-            attack_time = 0.055 if self.effect in ("audio_wave", "audio_flash") else 0.09
+            attack_time = 0.04 if self.effect in ("audio_wave", "audio_flash") else 0.09
             rise = 1 - math.exp(-elapsed / attack_time)
             fall = 1 - math.exp(-elapsed / 0.22)
             self.music_frame = [

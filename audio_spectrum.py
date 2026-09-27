@@ -12,7 +12,7 @@ from audio_meter import AudioMeter
 
 
 SAMPLE_RATE = 48_000
-FFT_SIZE = 4096
+FFT_SIZE = 2048
 BANDS = ((35, 180), (180, 2000), (2000, 8500))
 FREQUENCIES = np.fft.rfftfreq(FFT_SIZE, 1 / SAMPLE_RATE)
 WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
@@ -74,7 +74,7 @@ class AudioSpectrum:
             level = 0.0
             impact_envelope = 0.0
             with loopback.recorder(samplerate=SAMPLE_RATE,
-                                   blocksize=2048) as recorder:
+                                   blocksize=1024) as recorder:
                 with self._lock:
                     self._connected = True
                     self.error = ""
@@ -87,7 +87,7 @@ class AudioSpectrum:
                         with self._lock:
                             self._snapshot = (level, tuple(smoothed), 0.0,
                                               beat_serial, last_beat)
-                        stop.wait(0.02)
+                        stop.wait(0.006)
                         continue
                     mono = np.asarray(data, dtype=np.float32).mean(axis=1)
                     if len(mono) >= FFT_SIZE:
@@ -112,7 +112,7 @@ class AudioSpectrum:
                     impulse = max(0.0, min(1.0,
                         (bass - bass_average) / max(0.0005, bass_average) * 0.85))
                     impact_envelope += (impulse - impact_envelope) * (
-                        0.42 if impulse > impact_envelope else 0.12)
+                        0.62 if impulse > impact_envelope else 0.15)
                     now = time.perf_counter()
                     if (target_level > 0.12 and impulse > 0.22 and
                             bass > previous_bass * 1.10 and
@@ -125,7 +125,7 @@ class AudioSpectrum:
                     with self._lock:
                         self._snapshot = (level, tuple(smoothed), impact_envelope,
                                           beat_serial, last_beat)
-                    stop.wait(0.004)
+                    stop.wait(0.002)
         except Exception as exc:
             if not stop.is_set():
                 LOG.warning("Music spectrum unavailable: %s", exc)

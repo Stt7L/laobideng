@@ -861,6 +861,10 @@ class MainWindow(QMainWindow):
             self.retry_timer.start()
 
     def _frame_tick(self):
+        interval = (20 if self.engine.effect in MUSIC and
+                    self.engine.transport == "wired" else 33)
+        if self.frame_timer.interval() != interval:
+            self.frame_timer.setInterval(interval)
         try:
             self.engine.tick()
         except OSError as error:
