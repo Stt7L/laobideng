@@ -143,12 +143,14 @@ def ecg_trace_at(samples, times, target_time):
 def render(effect, now, base, accent, brightness, speed, events,
            ripple_width=1.0, audio_level=0.0, audio_beats=(),
            audio_impact=0.0, audio_bands=(), audio_trace=(),
-           custom_heart_keys=(), custom_canvas_keys=()):
+           custom_heart_keys=(), custom_canvas_keys=(),
+           base_brightness=1.0, accent_brightness=1.0,
+           ecg_background=(255, 255, 255)):
     """Return one RGB color per supported LED, indexed by physical LED ID."""
     result = [(0, 0, 0)] * max(105, max(LED_CENTERS, default=0) + 1)
     t = now * max(0.2, speed)
-    base_lit = scale(base, brightness)
-    accent_lit = scale(accent, brightness)
+    base_lit = scale(base, brightness * base_brightness)
+    accent_lit = scale(accent, brightness * accent_brightness)
     bass, middle, treble = (audio_bands if len(audio_bands) == 3 else
                             (audio_level,) * 3)
     beat_energy = 0.0
@@ -181,7 +183,7 @@ def render(effect, now, base, accent, brightness, speed, events,
                     if cap.name in custom_canvas_keys
                     for led in cap.leds}
                    if effect in {"custom_canvas", "custom_sparkle"} else set())
-    white_lit = scale((255, 255, 255), brightness) if ecg_effect else None
+    background_lit = scale(ecg_background, brightness) if ecg_effect else None
     width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
@@ -377,8 +379,8 @@ def render(effect, now, base, accent, brightness, speed, events,
                               motif_bounds[1] <= y <= motif_bounds[3])
             color = (scale(accent_lit, 0.64 + 0.36 * heart_beat)
                      if led in heart_leds else
-                     white_lit if inside_artwork else
-                     mix(white_lit, base_lit, line))
+                     background_lit if inside_artwork else
+                     mix(background_lit, base_lit, line))
         else:
             color = base_lit
 

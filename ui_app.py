@@ -16,7 +16,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, 
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QColorDialog, QDoubleSpinBox, QFrame,
-    QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
@@ -361,7 +361,15 @@ class MainWindow(QMainWindow):
             restore_v98_layout()
         self.engine.base = color_from_setting(self.settings.get("base"), (255, 255, 255))
         self.engine.accent = color_from_setting(self.settings.get("accent"), (0, 0, 0))
+        self.engine.global_color = color_from_setting(
+            self.settings.get("global_color"), self.engine.base)
+        self.engine.ecg_background = color_from_setting(
+            self.settings.get("ecg_background"), (255, 255, 255))
         self.engine.brightness = self._clamp(self.settings.get("brightness"), 0.0, 1.0, 0.65)
+        self.engine.base_brightness = self._clamp(
+            self.settings.get("base_brightness"), 0.0, 1.0, 1.0)
+        self.engine.accent_brightness = self._clamp(
+            self.settings.get("accent_brightness"), 0.0, 1.0, 1.0)
         self.engine.speed = self._clamp(self.settings.get("speed"), 0.2, 3.0, 1.0)
         self.engine.ripple_width = self._clamp(
             self.settings.get("ripple_width"), 0.5, 2.0, 1.0)
@@ -386,6 +394,19 @@ class MainWindow(QMainWindow):
         if self.engine.effect in self.effect_palettes:
             self.engine.base, self.engine.accent = self.effect_palettes[self.engine.effect]
         self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
+        self.saved_presets = {}
+        raw_presets = self.settings.get("saved_presets", [])
+        if isinstance(raw_presets, list):
+            for item in raw_presets:
+                if isinstance(item, dict) and isinstance(item.get("name"), str):
+                    name = item["name"].strip()[:24]
+                    if name:
+                        self.saved_presets[name] = self._normalize_preset(item)
+        active = self.settings.get("active_preset")
+        self.active_preset = active if active in self.saved_presets else None
+        self._updating_controls = False
+        if self.active_preset:
+            self._set_preset_values(self.saved_presets[self.active_preset])
         saved_category = self.settings.get("gallery_category")
         self.gallery_category = (
             saved_category if saved_category in {item[0] for item in CATEGORIES}
@@ -436,6 +457,47 @@ class MainWindow(QMainWindow):
             return max(low, min(high, float(value)))
         except (TypeError, ValueError):
             return default
+
+    def _normalize_preset(self, item):
+        """Keep named presets portable and discard malformed saved fields."""
+        return {
+            "base": color_hex(color_from_setting(item.get("base"), self.engine.base)),
+            "accent": color_hex(color_from_setting(item.get("accent"), self.engine.accent)),
+            "global_color": color_hex(color_from_setting(
+                item.get("global_color"), self.engine.global_color)),
+            "ecg_background": color_hex(color_from_setting(
+                item.get("ecg_background"), self.engine.ecg_background)),
+            "brightness": self._clamp(item.get("brightness"), 0.0, 1.0,
+                                      self.engine.brightness),
+            "base_brightness": self._clamp(item.get("base_brightness"), 0.0, 1.0,
+                                           self.engine.base_brightness),
+            "accent_brightness": self._clamp(item.get("accent_brightness"), 0.0, 1.0,
+                                             self.engine.accent_brightness),
+            "speed": self._clamp(item.get("speed"), 0.2, 3.0, self.engine.speed),
+            "ripple_width": self._clamp(item.get("ripple_width"), 0.5, 2.0,
+                                        self.engine.ripple_width),
+        }
+
+    def _preset_snapshot(self):
+        return self._normalize_preset({
+            "base": color_hex(self.engine.base),
+            "accent": color_hex(self.engine.accent),
+            "global_color": color_hex(self.engine.global_color),
+            "ecg_background": color_hex(self.engine.ecg_background),
+            "brightness": self.engine.brightness,
+            "base_brightness": self.engine.base_brightness,
+            "accent_brightness": self.engine.accent_brightness,
+            "speed": self.engine.speed,
+            "ripple_width": self.engine.ripple_width,
+        })
+
+    def _set_preset_values(self, preset):
+        for field in ("base", "accent", "global_color", "ecg_background"):
+            setattr(self.engine, field, color_from_setting(
+                preset[field], getattr(self.engine, field)))
+        for field in ("brightness", "base_brightness", "accent_brightness",
+                      "speed", "ripple_width"):
+            setattr(self.engine, field, preset[field])
 
     def _build_ui(self):
         root = QWidget()
@@ -515,7 +577,7 @@ class MainWindow(QMainWindow):
         self._refresh_custom_editor()
 
         effects_card, effects_layout = self._card("灯效画廊")
-        effects_hint = QLabel("每款灯效独立保存配色 · 点击分类按钮展开或收起")
+        effects_hint = QLabel("点击分类展开灯效；可用下方预设把一套配色用于所有灯效")
         effects_hint.setObjectName("muted")
         effects_layout.addWidget(effects_hint)
         gallery_controls = QHBoxLayout()
@@ -583,7 +645,7 @@ class MainWindow(QMainWindow):
         self._refresh_gallery()
 
         colors_layout = effects_layout
-        palette_heading = QLabel("当前灯效配色")
+        palette_heading = QLabel("颜色搭配")
         palette_heading.setObjectName("sectionTitle")
         colors_layout.addWidget(palette_heading)
         self.palette_hint = QLabel()
@@ -598,10 +660,37 @@ class MainWindow(QMainWindow):
             button.setObjectName("colorTile")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIconSize(QSize(28, 28))
+            button.setAccessibleName("选择当前灯效的底色" if target == "base"
+                                     else "选择当前灯效的点缀色")
             button.clicked.connect(lambda _checked=False, which=target:
                                    self._open_color_editor(which))
-            tiles.addWidget(button)
+            tiles.addWidget(button, 1)
         colors_layout.addLayout(tiles)
+        global_row = QHBoxLayout()
+        global_row.setSpacing(12)
+        self.global_button = QPushButton()
+        self.global_button.setObjectName("colorTile")
+        self.global_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.global_button.setIconSize(QSize(28, 28))
+        self.global_button.setAccessibleName("选择全局颜色")
+        self.global_button.clicked.connect(
+            lambda: self._open_color_editor("global_color"))
+        global_row.addWidget(self.global_button, 1)
+        self.global_apply_button = QPushButton("同步为全部灯效底色")
+        self.global_apply_button.setObjectName("secondary")
+        self.global_apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.global_apply_button.setToolTip("将全局颜色同步给全部灯效，点缀色保留原设置")
+        self.global_apply_button.clicked.connect(self._sync_global_color)
+        global_row.addWidget(self.global_apply_button)
+        colors_layout.addLayout(global_row)
+        self.ecg_background_button = QPushButton()
+        self.ecg_background_button.setObjectName("colorTile")
+        self.ecg_background_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ecg_background_button.setIconSize(QSize(28, 28))
+        self.ecg_background_button.setAccessibleName("选择心电波背景色")
+        self.ecg_background_button.clicked.connect(
+            lambda: self._open_color_editor("ecg_background"))
+        colors_layout.addWidget(self.ecg_background_button)
         self._update_color_buttons()
 
         self.color_editor = QFrame()
@@ -650,8 +739,14 @@ class MainWindow(QMainWindow):
 
         settings_card, settings_layout = self._card("灯效设置")
         self.brightness_slider, self.brightness_value, _ = self._slider_row(
-            settings_layout, "常亮亮度", 0, 1000,
+            settings_layout, "整体亮度", 0, 1000,
             round(self.engine.brightness * 1000), "%")
+        self.base_brightness_slider, self.base_brightness_value, self.base_brightness_row = self._slider_row(
+            settings_layout, "底色亮度", 0, 1000,
+            round(self.engine.base_brightness * 1000), "%")
+        self.accent_brightness_slider, self.accent_brightness_value, self.accent_brightness_row = self._slider_row(
+            settings_layout, "点缀色亮度", 0, 1000,
+            round(self.engine.accent_brightness * 1000), "%")
         self.speed_slider, self.speed_value, _ = self._slider_row(
             settings_layout, "动画速度", 200, 3000,
             round(self.engine.speed * 1000), "×")
@@ -659,13 +754,59 @@ class MainWindow(QMainWindow):
             settings_layout, "光带宽度", 500, 2000,
             round(self.engine.ripple_width * 1000), "%")
         self.brightness_slider.valueChanged.connect(self._settings_changed)
+        self.base_brightness_slider.valueChanged.connect(self._settings_changed)
+        self.accent_brightness_slider.valueChanged.connect(self._settings_changed)
         self.speed_slider.valueChanged.connect(self._settings_changed)
         self.ripple_width_slider.valueChanged.connect(self._settings_changed)
         self.width_row.setVisible(self.engine.effect in WIDTH_EFFECTS)
+        self._refresh_brightness_labels()
+        brightness_hint = QLabel("整体亮度控制全部灯光；底色和点缀色亮度可单独微调")
+        brightness_hint.setObjectName("hint")
+        settings_layout.insertWidget(1, brightness_hint)
         settings_hint = QLabel("拖动滑块，或点击右侧数值输入后按回车")
         settings_hint.setObjectName("hint")
         settings_layout.addWidget(settings_hint)
         layout.addWidget(settings_card)
+
+        presets_card, presets_layout = self._card("我的灯光预设")
+        presets_hint = QLabel("保存当前配色与亮度、速度、宽度；应用后切换灯效继续使用")
+        presets_hint.setObjectName("muted")
+        presets_hint.setWordWrap(True)
+        presets_layout.addWidget(presets_hint)
+        save_row = QHBoxLayout()
+        save_row.setSpacing(9)
+        self.preset_name_input = QLineEdit()
+        self.preset_name_input.setPlaceholderText("给这套设置起个名字")
+        self.preset_name_input.setMaxLength(24)
+        self.preset_name_input.setAccessibleName("预设名称")
+        self.preset_name_input.returnPressed.connect(self._save_preset)
+        save_row.addWidget(self.preset_name_input, 1)
+        self.preset_save_button = QPushButton("保存当前设置")
+        self.preset_save_button.setObjectName("primary")
+        self.preset_save_button.clicked.connect(self._save_preset)
+        save_row.addWidget(self.preset_save_button)
+        presets_layout.addLayout(save_row)
+        use_row = QHBoxLayout()
+        use_row.setSpacing(9)
+        self.preset_combo = QComboBox()
+        self.preset_combo.setAccessibleName("已保存的灯光预设")
+        self.preset_combo.currentIndexChanged.connect(self._preset_selection_changed)
+        use_row.addWidget(self.preset_combo, 1)
+        self.preset_apply_button = QPushButton("应用预设")
+        self.preset_apply_button.setObjectName("secondary")
+        self.preset_apply_button.clicked.connect(self._apply_selected_preset)
+        use_row.addWidget(self.preset_apply_button)
+        self.preset_delete_button = QPushButton("删除")
+        self.preset_delete_button.setObjectName("quiet")
+        self.preset_delete_button.clicked.connect(self._delete_selected_preset)
+        use_row.addWidget(self.preset_delete_button)
+        presets_layout.addLayout(use_row)
+        self.preset_status = QLabel()
+        self.preset_status.setObjectName("hint")
+        self.preset_status.setWordWrap(True)
+        presets_layout.addWidget(self.preset_status)
+        self._refresh_preset_controls(self.active_preset)
+        layout.addWidget(presets_card)
 
         connection_card, connection_layout = self._card("连接方式")
         transport_grid = QGridLayout()
@@ -851,7 +992,8 @@ class MainWindow(QMainWindow):
         row.setSpacing(18)
         name = QLabel(label)
         name.setObjectName("muted")
-        name.setFixedWidth(80)
+        name.setFixedWidth(102)
+        container.name_label = name
         row.addWidget(name)
         slider = FineSlider()
         slider.setRange(low, high)
@@ -952,7 +1094,7 @@ class MainWindow(QMainWindow):
     def _application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive and self.editing_color is not None:
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", self.hex_input.text().strip()):
-                current = self.engine.base if self.editing_color == "base" else self.engine.accent
+                current = getattr(self.engine, self.editing_color)
                 self.hex_input.setText(color_hex(current))
             self._apply_color()
 
@@ -1136,21 +1278,19 @@ class MainWindow(QMainWindow):
         if effect == self.engine.effect:
             return
         self._cancel_color_editor()
-        self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
-        palette = self.effect_palettes.get(effect)
-        if palette is None:
-            if effect in ("audio_ecg", "custom_ecg"):
-                palette = ((255, 81, 177), (255, 64, 91))
-            elif effect in ("custom_canvas", "custom_sparkle"):
-                palette = ((255, 255, 255), (255, 64, 91))
-            else:
-                accent = (self.engine.accent if self.engine.accent != (0, 0, 0)
-                          or effect == "ripple" else (196, 239, 112))
-                palette = (self.engine.base, accent)
-            self.effect_palettes[effect] = palette
+        if self.active_preset:
+            palette = (self.engine.base, self.engine.accent)
+        else:
+            self.effect_palettes[self.engine.effect] = (
+                self.engine.base, self.engine.accent)
+            palette = self.effect_palettes.get(effect)
+            if palette is None:
+                palette = self._default_palette(effect)
+                self.effect_palettes[effect] = palette
         self.engine.set_effect(effect)
         self.engine.base, self.engine.accent = palette
         self.width_row.setVisible(effect in WIDTH_EFFECTS)
+        self._refresh_brightness_labels()
         for effect_id, button in self.effect_buttons.items():
             button.setChecked(effect_id == effect)
         self._update_color_buttons()
@@ -1163,6 +1303,35 @@ class MainWindow(QMainWindow):
         if self._custom_key_set() is not None:
             QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(
                 self.custom_editor_card))
+
+    def _default_palette(self, effect):
+        if effect in ("audio_ecg", "custom_ecg"):
+            return (255, 81, 177), (255, 64, 91)
+        if effect in ("custom_canvas", "custom_sparkle"):
+            return (255, 255, 255), (255, 64, 91)
+        accent = (self.engine.accent if self.engine.accent != (0, 0, 0)
+                  or effect == "ripple" else (196, 239, 112))
+        return self.engine.base, accent
+
+    def _sync_global_color(self):
+        if self.editing_color == "global_color":
+            self._apply_color()
+            if self.editing_color is not None:
+                return
+        else:
+            self._cancel_color_editor()
+        self._detach_active_preset()
+        for effect_id in EFFECT_IDS:
+            _, accent = self.effect_palettes.get(
+                effect_id, self._default_palette(effect_id))
+            self.effect_palettes[effect_id] = (self.engine.global_color, accent)
+        self.engine.base = self.engine.global_color
+        self._update_color_buttons()
+        self._update_palette_hint()
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
+        self.preset_status.setText("全局颜色已同步到全部灯效的底色")
+        self._save_settings()
 
     def _refresh_gallery(self):
         title = next(title for effect_id, title, _ in EFFECTS
@@ -1190,11 +1359,11 @@ class MainWindow(QMainWindow):
 
     def _update_palette_hint(self):
         if self.engine.effect == "ripple":
-            hint = "波纹色就是按键后扩散的颜色，默认黑色；打开色盘即可实时调整。"
+            hint = "底色控制常亮区域，波纹色控制按键后扩散的光。"
         elif self.engine.effect == "audio_ecg":
-            hint = "心电线跟随音乐起伏，按键预览保持只读。想自己画爱心，请选择自定义灯效中的「自绘心跳」。"
+            hint = "心电线随音乐起伏，背景色可单独选择；按键预览保持只读。"
         elif self.engine.effect == "custom_ecg":
-            hint = "心电线由音乐驱动；在上方键位预览点选爱心键，鼓点会让它们跳动。"
+            hint = "心电线随音乐起伏；背景色可单独选择，爱心键可在预览中绘制。"
         elif self.engine.effect in ("custom_canvas", "custom_sparkle"):
             hint = "在上方键位预览涂画；底色和所选键的点缀色可分别调整。"
         elif self.engine.effect == "solid":
@@ -1329,16 +1498,136 @@ class MainWindow(QMainWindow):
         self.adapter_status.setText(
             f"已保存到 {output}。提供这份资料后，可先校准键位和灯珠，再制作灯控适配。")
 
+    def _refresh_preset_controls(self, select_name=None, message=None):
+        selected = select_name or self.preset_combo.currentData()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItem("选择已保存的预设", None)
+        for name in self.saved_presets:
+            self.preset_combo.addItem(name, name)
+        index = self.preset_combo.findData(selected)
+        self.preset_combo.setCurrentIndex(max(0, index))
+        self.preset_combo.blockSignals(False)
+        self._preset_selection_changed()
+        if message is not None:
+            self.preset_status.setText(message)
+        elif self.active_preset:
+            self.preset_status.setText(f"正在使用「{self.active_preset}」· 切换灯效仍沿用")
+        else:
+            self.preset_status.setText("调整后可保存为预设；同名保存会更新原预设")
+
+    def _preset_selection_changed(self):
+        has_selection = self.preset_combo.currentData() in self.saved_presets
+        self.preset_apply_button.setEnabled(has_selection)
+        self.preset_delete_button.setEnabled(has_selection)
+
+    def _detach_active_preset(self):
+        if self.active_preset is None:
+            return
+        former = self.active_preset
+        self.active_preset = None
+        self.effect_palettes[self.engine.effect] = (
+            self.engine.base, self.engine.accent)
+        self._refresh_preset_controls(
+            former, "已调整当前设置；保存的预设仍保留原样")
+
+    def _save_preset(self):
+        name = self.preset_name_input.text().strip()
+        if not name:
+            self.preset_status.setText("请先输入预设名称")
+            self.preset_name_input.setFocus()
+            return
+        if self.editing_color is not None:
+            self._apply_color()
+            if self.editing_color is not None:
+                return
+        existed = name in self.saved_presets
+        self.saved_presets[name] = self._preset_snapshot()
+        self.active_preset = name
+        self._refresh_preset_controls(
+            name, f"已{'更新' if existed else '保存'}「{name}」· 可用于所有灯效")
+        self._save_settings()
+
+    def _apply_selected_preset(self):
+        name = self.preset_combo.currentData()
+        if name not in self.saved_presets:
+            return
+        self._cancel_color_editor()
+        self.active_preset = name
+        self._set_preset_values(self.saved_presets[name])
+        self._refresh_setting_controls()
+        self._update_color_buttons()
+        self._update_palette_hint()
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
+        self._refresh_preset_controls(
+            name, f"正在使用「{name}」· 切换灯效仍沿用")
+        self._save_settings()
+
+    def _delete_selected_preset(self):
+        name = self.preset_combo.currentData()
+        if name not in self.saved_presets:
+            return
+        if self.active_preset == name:
+            self._detach_active_preset()
+        del self.saved_presets[name]
+        self._refresh_preset_controls(
+            message=f"已删除「{name}」；当前灯光保持原样")
+        self._save_settings()
+
+    def _refresh_setting_controls(self):
+        self._updating_controls = True
+        try:
+            for slider, display, value, percent in (
+                    (self.brightness_slider, self.brightness_value,
+                     self.engine.brightness, True),
+                    (self.base_brightness_slider, self.base_brightness_value,
+                     self.engine.base_brightness, True),
+                    (self.accent_brightness_slider, self.accent_brightness_value,
+                     self.engine.accent_brightness, True),
+                    (self.speed_slider, self.speed_value, self.engine.speed, False),
+                    (self.ripple_width_slider, self.ripple_width_value,
+                     self.engine.ripple_width, True)):
+                slider.setValue(round(value * 1000))
+                display.setValue(value * 100 if percent else value)
+        finally:
+            self._updating_controls = False
+
+    def _refresh_brightness_labels(self):
+        effect = self.engine.effect
+        base_label = ("心电线亮度" if effect in ("audio_ecg", "custom_ecg")
+                      else "底色亮度")
+        accent_label = ("爱心亮度" if effect == "custom_ecg" else
+                        "波纹亮度" if effect == "ripple" else "点缀色亮度")
+        self.base_brightness_row.name_label.setText(base_label)
+        self.base_brightness_slider.setAccessibleName(base_label)
+        self.base_brightness_value.setAccessibleName(f"{base_label}数值")
+        self.accent_brightness_row.name_label.setText(accent_label)
+        self.accent_brightness_slider.setAccessibleName(accent_label)
+        self.accent_brightness_value.setAccessibleName(f"{accent_label}数值")
+        self.accent_brightness_row.setVisible(effect not in ("audio_ecg", "solid"))
+
     def _settings_changed(self):
+        if self._updating_controls:
+            return
+        self._detach_active_preset()
         brightness = self.brightness_slider.value()
+        base_brightness = self.base_brightness_slider.value()
+        accent_brightness = self.accent_brightness_slider.value()
         speed = self.speed_slider.value()
         ripple_width = self.ripple_width_slider.value()
         self.engine.brightness = brightness / 1000
+        self.engine.base_brightness = base_brightness / 1000
+        self.engine.accent_brightness = accent_brightness / 1000
         self.engine.speed = speed / 1000
         self.engine.ripple_width = ripple_width / 1000
         self.brightness_value.setValue(brightness / 10)
+        self.base_brightness_value.setValue(base_brightness / 10)
+        self.accent_brightness_value.setValue(accent_brightness / 10)
         self.speed_value.setValue(speed / 1000)
         self.ripple_width_value.setValue(ripple_width / 10)
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self.preview.update()
         if not self.preview_mode:
             self.save_timer.start()
 
@@ -1347,25 +1636,33 @@ class MainWindow(QMainWindow):
         accent_label = ("爱心色" if self.engine.effect == "custom_ecg" else
                         "波纹色" if self.engine.effect == "ripple" else "点缀色")
         for button, label, value in ((self.base_button, base_label, self.engine.base),
-                                     (self.accent_button, accent_label, self.engine.accent)):
+                                     (self.accent_button, accent_label, self.engine.accent),
+                                     (self.global_button, "全局颜色", self.engine.global_color),
+                                     (self.ecg_background_button, "心电背景色",
+                                      self.engine.ecg_background)):
             button.setIcon(swatch_icon(value))
             button.setText(f"{label}    {color_hex(value)}")
         self.accent_button.setVisible(self.engine.effect not in ("audio_ecg", "solid"))
+        self.ecg_background_button.setVisible(
+            self.engine.effect in ("audio_ecg", "custom_ecg"))
 
     def _open_color_editor(self, target):
         if self.editing_color is not None:
             self._cancel_color_editor()
         self._ensure_color_dialog()
         self.editing_color = target
-        self.editing_original = (self.engine.base, self.engine.accent)
+        self.editing_original = {
+            field: getattr(self.engine, field)
+            for field in ("base", "accent", "global_color", "ecg_background")}
         self.editor_title.setText(
             "修改心电线颜色" if target == "base" and self.engine.effect in
             ("audio_ecg", "custom_ecg") else
             "修改底色" if target == "base" else
+            "修改全局颜色" if target == "global_color" else
+            "修改心电背景色" if target == "ecg_background" else
             "修改爱心颜色" if self.engine.effect == "custom_ecg" else
             "修改波纹色" if self.engine.effect == "ripple" else "修改点缀色")
-        self.hex_input.setText(color_hex(self.engine.base if target == "base"
-                                         else self.engine.accent))
+        self.hex_input.setText(color_hex(getattr(self.engine, target)))
         self.color_dialog.setCurrentColor(QColor(self.hex_input.text()))
         self.color_error.clear()
         self.color_editor.show()
@@ -1394,10 +1691,7 @@ class MainWindow(QMainWindow):
         if not self.editing_color:
             return
         rgb = (color.red(), color.green(), color.blue())
-        if self.editing_color == "base":
-            self.engine.base = rgb
-        else:
-            self.engine.accent = rgb
+        setattr(self.engine, self.editing_color, rgb)
         self.engine.last_frame = self.engine.frame(time.perf_counter())
         self._update_color_buttons()
         self.preview.update()
@@ -1410,7 +1704,8 @@ class MainWindow(QMainWindow):
 
     def _cancel_color_editor(self):
         if self.editing_original is not None:
-            self.engine.base, self.engine.accent = self.editing_original
+            for field, value in self.editing_original.items():
+                setattr(self.engine, field, value)
             self.engine.last_frame = self.engine.frame(time.perf_counter())
             self._update_color_buttons()
             self.preview.update()
@@ -1431,11 +1726,11 @@ class MainWindow(QMainWindow):
         except ValueError:
             self.color_error.setText("颜色代码无效")
             return
-        if self.editing_color == "base":
-            self.engine.base = color
-        else:
-            self.engine.accent = color
-        self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
+        setattr(self.engine, self.editing_color, color)
+        self._detach_active_preset()
+        if self.editing_color in ("base", "accent"):
+            self.effect_palettes[self.engine.effect] = (
+                self.engine.base, self.engine.accent)
         self.engine.last_frame = self.engine.frame(time.perf_counter())
         self._update_color_buttons()
         self.editing_original = None
@@ -1446,11 +1741,16 @@ class MainWindow(QMainWindow):
     def _save_settings(self):
         if self.preview_mode:
             return
-        saved_base, saved_accent = (self.editing_original if self.editing_original is not None
-                                    else (self.engine.base, self.engine.accent))
-        self.effect_palettes[self.engine.effect] = (saved_base, saved_accent)
+        colors = self.editing_original or {
+            field: getattr(self.engine, field)
+            for field in ("base", "accent", "global_color", "ecg_background")}
+        saved_base, saved_accent = colors["base"], colors["accent"]
+        if self.active_preset is None:
+            self.effect_palettes[self.engine.effect] = (saved_base, saved_accent)
         data = {"base": color_hex(saved_base),
                 "accent": color_hex(saved_accent),
+                "global_color": color_hex(colors["global_color"]),
+                "ecg_background": color_hex(colors["ecg_background"]),
                 "effect_palettes": {
                     effect_id: {"base": color_hex(palette[0]),
                                 "accent": color_hex(palette[1])}
@@ -1459,8 +1759,13 @@ class MainWindow(QMainWindow):
                 "custom_heart_keys": sorted(self.engine.custom_heart_keys),
                 "custom_canvas_keys": sorted(self.engine.custom_canvas_keys),
                 "brightness": self.engine.brightness,
+                "base_brightness": self.engine.base_brightness,
+                "accent_brightness": self.engine.accent_brightness,
                 "speed": self.engine.speed,
                 "ripple_width": self.engine.ripple_width,
+                "saved_presets": [dict(name=name, **preset)
+                                  for name, preset in self.saved_presets.items()],
+                "active_preset": self.active_preset,
                 "active": self.engine.ripples_enabled,
                 "effect": self.engine.effect,
                 "transport": self.engine.preference,

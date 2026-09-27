@@ -344,6 +344,10 @@ class LightingController:
         self.base = (255, 255, 255)
         self.accent = (0, 0, 0)
         self.brightness = 0.65
+        self.base_brightness = 1.0
+        self.accent_brightness = 1.0
+        self.global_color = (255, 255, 255)
+        self.ecg_background = (255, 255, 255)
         self.speed = 1.0
         self.ripple_width = 1.0
         self.custom_heart_keys = set()
@@ -450,7 +454,8 @@ class LightingController:
             self._remove_hook()
 
     def base_color(self):
-        return tuple(round(channel * self.brightness) for channel in self.base)
+        level = max(0.0, min(1.0, self.brightness * self.base_brightness))
+        return tuple(round(channel * level) for channel in self.base)
 
     def _write_report(self, packet):
         if self.handle is None:
@@ -499,7 +504,10 @@ class LightingController:
                                         if now - event[1] < lifetime][-64:]
                     frame = render(self.effect, now, self.base, self.accent,
                                    self.brightness, self.speed,
-                                   wireless_ripples, self.ripple_width)
+                                   wireless_ripples, self.ripple_width,
+                                   base_brightness=self.base_brightness,
+                                   accent_brightness=self.accent_brightness,
+                                   ecg_background=self.ecg_background)
                 else:
                     wireless_ripples.clear()
                     if frame is None:
@@ -595,7 +603,10 @@ class LightingController:
                         self.ripple_width, self.audio_level, self.audio_beats,
                         self.audio_meter.impact, self.audio_meter.bands,
                         self.audio_trace, self.custom_heart_keys,
-                        self.custom_canvas_keys)
+                        self.custom_canvas_keys,
+                        base_brightness=self.base_brightness,
+                        accent_brightness=self.accent_brightness,
+                        ecg_background=self.ecg_background)
         # Moving one-key-wide graphics must clear their previous positions in
         # the same frame; the shared music decay otherwise paints a wide trail.
         if self.effect not in MUSIC or self.effect in {"audio_ecg", "custom_ecg"}:
