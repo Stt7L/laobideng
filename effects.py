@@ -90,7 +90,8 @@ def segment_distance(px, py, ax, ay, bx, by):
 
 
 def render(effect, now, base, accent, brightness, speed, events,
-           ripple_width=1.0, audio_level=0.0, audio_beats=()):
+           ripple_width=1.0, audio_level=0.0, audio_beats=(),
+           audio_impact=0.0):
     """Return one RGB color per supported LED, indexed by physical LED ID."""
     result = [(0, 0, 0)] * max(105, max(LED_CENTERS, default=0) + 1)
     t = now * max(0.2, speed)
@@ -188,40 +189,50 @@ def render(effect, now, base, accent, brightness, speed, events,
             glow *= math.exp(-((y - 170 - 55 * math.sin(t * 0.7)) / 100) ** 2)
             color = mix(scale(base_lit, 0.2), accent_lit, glow)
         elif effect == "audio_pulse":
-            color = mix(scale(base_lit, 0.42), accent_lit, audio_level * 0.92)
+            pulse = min(1.0, audio_level * 0.76 + audio_impact * 0.28)
+            color = mix(scale(base_lit, 0.26), accent_lit, pulse)
         elif effect == "audio_wave":
-            glow = audio_level * 0.15
             distance = math.hypot(x - 441, y - 175)
+            # A quiet travelling ring remains visible between detected beats.
+            # This also gives non-percussive music a continuous response.
+            flow = 0.5 + 0.5 * math.cos(distance / 53 - t * 4.2)
+            glow = audio_level * (0.10 + flow * 0.32)
             for started in audio_beats:
                 age = now - started
-                if 0 <= age < 1.6:
-                    glow = max(glow, math.exp(-((distance - age * 360 * speed) / 38) ** 2)
-                               * (1 - age / 1.6))
-            color = mix(scale(base_lit, 0.58), accent_lit, glow)
+                if 0 <= age < 1.5:
+                    front = age * 440 * speed
+                    ring = math.exp(-((distance - front) / 52) ** 2)
+                    glow = max(glow, ring * (1 - age / 1.5) ** 0.55)
+            color = mix(scale(base_lit, 0.30), accent_lit, glow)
         elif effect == "audio_ribbon":
-            ribbon = math.exp(-((y - 173 - math.sin(x / 94 - t * 2.6) *
-                                 (22 + audio_level * 103)) / 50) ** 2)
-            color = mix(scale(base_lit, 0.38), accent_lit,
-                        ribbon * (0.13 + audio_level * 0.85))
+            center = 173 + math.sin(x / 92 - t * 2.8) * (13 + audio_level * 95)
+            ribbon = math.exp(-((y - center) / 36) ** 2)
+            shimmer = 0.72 + 0.28 * math.sin(x / 47 + t * 3.2)
+            glow = ribbon * shimmer * min(1.0, 0.26 + audio_level * 0.78 +
+                                           audio_impact * 0.18)
+            color = mix(scale(base_lit, 0.28), accent_lit, glow)
         elif effect == "audio_stars":
-            step = int(t * 5)
-            phase = (t * 5) % 1
-            density = 0.04 + audio_level * 0.34
+            step = int(t * 2.7)
+            phase = (t * 2.7) % 1
+            density = 0.10 + audio_level * 0.37
             pick = noise(led * 31 + step * 17)
-            glow = max(0.0, min(1.0, (pick - (1 - density)) / max(0.05, density)))
-            glow *= 1 - abs(phase - 0.5) * 1.4
-            color = mix(scale(base_lit, 0.35), accent_lit, glow * audio_level)
+            glow = max(0.0, min(1.0, (pick - (1 - density)) / density))
+            glow *= math.sin(math.pi * phase) * (0.36 + audio_level * 0.64)
+            color = mix(scale(base_lit, 0.24), accent_lit, glow)
         elif effect == "audio_meter":
-            edge = 70 + audio_level * 745
-            glow = max(0.0, min(1.0, (edge - x + 25) / 52))
-            color = mix(scale(base_lit, 0.28), accent_lit, glow * 0.9)
+            distance = abs(x - 441)
+            edge = audio_level * 400
+            fill = max(0.0, min(1.0, (edge - distance + 15) / 43))
+            marker = math.exp(-((distance - edge) / 31) ** 2) * audio_level
+            color = mix(scale(base_lit, 0.24), accent_lit,
+                        min(1.0, fill * 0.78 + marker * 0.22))
         elif effect == "audio_flash":
-            glow = audio_level * 0.18
+            glow = max(audio_level * 0.10, audio_impact * 0.32)
             for started in audio_beats:
                 age = now - started
-                if 0 <= age < 0.7:
-                    glow = max(glow, (1 - age / 0.7) ** 2)
-            color = mix(scale(base_lit, 0.5), accent_lit, glow)
+                if 0 <= age < 0.8:
+                    glow = max(glow, math.exp(-age * 5.2))
+            color = mix(scale(base_lit, 0.30), accent_lit, glow)
         else:
             color = base_lit
 

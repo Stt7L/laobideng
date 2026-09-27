@@ -317,7 +317,6 @@ class LightingController:
         self.ripples = []
         self.audio_meter = AudioMeter()
         self.audio_level = 0.0
-        self.audio_last_level = 0.0
         self.audio_beats = []
         self.audio_last_beat = 0.0
         self.down_keys = set()
@@ -415,7 +414,6 @@ class LightingController:
         self.effect = effect
         self.ripples.clear()
         self.audio_beats.clear()
-        self.audio_last_level = 0.0
         if effect not in MUSIC:
             self.audio_meter.close()
             self.audio_level = 0.0
@@ -506,12 +504,14 @@ class LightingController:
         now = now if now is not None else time.perf_counter()
         if self.ripples_enabled and self.effect in MUSIC:
             self.audio_level = self.audio_meter.sample()
-            if (self.audio_level > 0.24 and
-                    self.audio_level - self.audio_last_level > 0.075 and
-                    now - self.audio_last_beat > 0.24):
+            # Detect a short rise against the recent playback level. A fixed
+            # volume threshold missed almost every beat at modest PC volume.
+            if (self.audio_meter.instant > 0.16 and
+                    self.audio_meter.impact > 0.16 and
+                    self.audio_meter.rise > 0.045 and
+                    now - self.audio_last_beat > 0.22):
                 self.audio_beats.append(now)
                 self.audio_last_beat = now
-            self.audio_last_level = self.audio_level
             self.audio_beats = [started for started in self.audio_beats
                                 if now - started < 1.6][-12:]
         elif self.audio_meter.available:
@@ -546,7 +546,8 @@ class LightingController:
             return [self.base_color()] * MAX_LED
         return render(self.effect, now, self.base, self.accent,
                       self.brightness, self.speed, self.ripples,
-                      self.ripple_width, self.audio_level, self.audio_beats)
+                      self.ripple_width, self.audio_level, self.audio_beats,
+                      self.audio_meter.impact)
 
     def _install_hook(self):
         if self.hook:

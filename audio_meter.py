@@ -1,6 +1,7 @@
 """Read the peak level of the Windows default playback device via Core Audio."""
 
 import ctypes
+import math
 import time
 import uuid
 
@@ -45,6 +46,10 @@ class AudioMeter:
         self.meter = ctypes.c_void_p()
         self.com_initialized = False
         self.level = 0.0
+        self.instant = 0.0
+        self.average = 0.0
+        self.impact = 0.0
+        self.rise = 0.0
         self.error = ""
         self.retry_after = 0.0
 
@@ -91,14 +96,25 @@ class AudioMeter:
             try:
                 _call(self.meter, 3, ctypes.c_long,
                       (ctypes.POINTER(ctypes.c_float),), ctypes.byref(peak))
-                target = min(1.0, max(0.0, peak.value * 3.0) ** 0.75)
-                self.level += (target - self.level) * (0.58 if target > self.level else 0.12)
+                # The endpoint peak is linear. A square-root curve keeps quiet
+                # playback visible without making loud playback a solid block.
+                target = min(1.0, math.sqrt(max(0.0, peak.value) * 3.6))
+                self.rise = max(0.0, target - self.instant)
+                self.instant = target
+                self.impact = max(0.0, min(1.0, (target - self.average) * 2.4))
+                self.average += (target - self.average) * (
+                    0.045 if target > self.average else 0.018)
+                self.level += (target - self.level) * (
+                    0.53 if target > self.level else 0.20)
             except OSError as error:
                 self.error = str(error)
                 self.retry_after = now + 3.0
                 self.close()
         else:
             self.level *= 0.85
+            self.instant = 0.0
+            self.impact = 0.0
+            self.rise = 0.0
         return self.level
 
     def close(self):
@@ -107,3 +123,8 @@ class AudioMeter:
         if self.com_initialized:
             ole32.CoUninitialize()
             self.com_initialized = False
+        self.level = 0.0
+        self.instant = 0.0
+        self.average = 0.0
+        self.impact = 0.0
+        self.rise = 0.0
