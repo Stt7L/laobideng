@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from backend import LightingController, bluetooth_keyboard_present
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
 from device_detection import detect_keyboards, preferred_known_keyboard
-from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE
+from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE, WIDTH_EFFECTS
 from layout import KEYCAPS, restore_v98_layout, set_keycaps
 
 
@@ -421,7 +421,7 @@ class MainWindow(QMainWindow):
             category_positions[category] += 1
             category_grids[category].addWidget(button, position // 3, position % 3)
             self.effect_buttons[effect_id] = button
-        self.music_status = QLabel("读取电脑默认播放设备的音量；不会录制或保存声音")
+        self.music_status = QLabel("分析电脑默认播放设备的节奏和频段；不会保存声音")
         self.music_status.setObjectName("hint")
         self.music_status.setWordWrap(True)
         music_status_row = QHBoxLayout()
@@ -500,18 +500,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(effects_card)
 
         settings_card, settings_layout = self._card("灯效设置")
-        self.brightness_slider, self.brightness_value = self._slider_row(
+        self.brightness_slider, self.brightness_value, _ = self._slider_row(
             settings_layout, "常亮亮度", 0, 1000,
             round(self.engine.brightness * 1000), "%")
-        self.speed_slider, self.speed_value = self._slider_row(
+        self.speed_slider, self.speed_value, _ = self._slider_row(
             settings_layout, "动画速度", 200, 3000,
             round(self.engine.speed * 1000), "×")
-        self.ripple_width_slider, self.ripple_width_value = self._slider_row(
-            settings_layout, "波纹宽度", 500, 2000,
+        self.ripple_width_slider, self.ripple_width_value, self.width_row = self._slider_row(
+            settings_layout, "光带宽度", 500, 2000,
             round(self.engine.ripple_width * 1000), "%")
         self.brightness_slider.valueChanged.connect(self._settings_changed)
         self.speed_slider.valueChanged.connect(self._settings_changed)
         self.ripple_width_slider.valueChanged.connect(self._settings_changed)
+        self.width_row.setVisible(self.engine.effect in WIDTH_EFFECTS)
         settings_hint = QLabel("拖动滑块，或点击右侧数值输入后按回车")
         settings_hint.setObjectName("hint")
         settings_layout.addWidget(settings_hint)
@@ -695,7 +696,9 @@ class MainWindow(QMainWindow):
         return card, content
 
     def _slider_row(self, parent, label, low, high, value, unit):
-        row = QHBoxLayout()
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(18)
         name = QLabel(label)
         name.setObjectName("muted")
@@ -722,8 +725,8 @@ class MainWindow(QMainWindow):
         display.valueChanged.connect(
             lambda number: slider.setValue(round(number * (10 if unit == "%" else 1000))))
         row.addWidget(display)
-        parent.addLayout(row)
-        return slider, display
+        parent.addWidget(container)
+        return slider, display, container
 
     def _build_tray(self):
         self.tray = None
@@ -869,7 +872,9 @@ class MainWindow(QMainWindow):
         if self.gallery_category == "music":
             meter = self.engine.audio_meter
             self.music_status.setText(
-                "系统播放音量已接入 · 不录制或保存声音" if meter.available else
+                "播放设备已接入 · 低频 / 中频 / 高频实时响应 · 不保存声音"
+                if meter.mode == "spectrum" else
+                "仅音量响应 · 频段分析正在连接" if meter.available else
                 "等待默认播放设备的声音；请播放音乐后查看灯光变化" if not meter.error else
                 f"音频暂不可用：{meter.error}")
 
@@ -914,6 +919,7 @@ class MainWindow(QMainWindow):
             self.effect_palettes[effect] = palette
         self.engine.set_effect(effect)
         self.engine.base, self.engine.accent = palette
+        self.width_row.setVisible(effect in WIDTH_EFFECTS)
         for effect_id, button in self.effect_buttons.items():
             button.setChecked(effect_id == effect)
         self._update_color_buttons()
@@ -937,8 +943,7 @@ class MainWindow(QMainWindow):
         self.audio_refresh.setVisible(self.gallery_category == "music")
 
     def _refresh_audio_device(self):
-        self.engine.audio_meter.close()
-        self.engine.audio_meter.retry_after = 0.0
+        self.engine.audio_meter.refresh()
         self.music_status.setText("正在连接系统默认播放设备…")
 
     def _toggle_category(self, category):
@@ -952,7 +957,7 @@ class MainWindow(QMainWindow):
         elif self.engine.effect == "solid":
             hint = "全键常亮只使用底色。"
         elif self.engine.effect in MUSIC:
-            hint = "灯光跟随系统默认播放设备的音量；可分别调整底色和点缀色。"
+            hint = "灯光跟随默认播放设备的节奏与频段；可分别调整底色和点缀色。"
         else:
             hint = "点击色块打开 RGB 色盘；每款灯效会记住自己的配色。"
         self.palette_hint.setText(hint)

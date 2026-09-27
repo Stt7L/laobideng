@@ -39,12 +39,20 @@ EFFECTS = (
     ("audio_stars", "音乐星群", "音乐越响，光点越繁密"),
     ("audio_meter", "音量刻度", "灯光长度跟随播放音量"),
     ("audio_flash", "重拍闪光", "强音到来时短促闪亮"),
+    ("audio_spectrum", "三频跃动", "低频、中频和高频分区起伏"),
 )
 EFFECT_IDS = {item[0] for item in EFFECTS}
 REACTIVE = {"ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
             "key_rain", "heatmap", "key_cross", "key_sparks"}
 MUSIC = {"audio_pulse", "audio_wave", "audio_ribbon", "audio_stars",
-         "audio_meter", "audio_flash"}
+         "audio_meter", "audio_flash", "audio_spectrum"}
+WIDTH_EFFECTS = {
+    "rainbow", "aurora", "meteor", "rain", "spiral", "gradient_wave",
+    "visor", "bubbles", "breathing_circle", "cross_beams", "comet",
+    "ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
+    "key_rain", "heatmap", "key_cross", "key_sparks",
+    "audio_wave", "audio_ribbon", "audio_meter", "audio_spectrum",
+}
 CATEGORIES = (
     ("regular", "常规灯效", "持续流动与氛围"),
     ("reactive", "互动灯效", "跟随你的每次按键"),
@@ -76,6 +84,11 @@ def scale(color, strength):
     return tuple(round(channel * max(0.0, min(1.0, strength))) for channel in color)
 
 
+def smoothstep(low, high, value):
+    position = max(0.0, min(1.0, (value - low) / (high - low)))
+    return position * position * (3 - 2 * position)
+
+
 def noise(seed):
     return (math.sin(seed * 127.1 + 78.233) * 43758.5453) % 1
 
@@ -91,12 +104,15 @@ def segment_distance(px, py, ax, ay, bx, by):
 
 def render(effect, now, base, accent, brightness, speed, events,
            ripple_width=1.0, audio_level=0.0, audio_beats=(),
-           audio_impact=0.0):
+           audio_impact=0.0, audio_bands=()):
     """Return one RGB color per supported LED, indexed by physical LED ID."""
     result = [(0, 0, 0)] * max(105, max(LED_CENTERS, default=0) + 1)
     t = now * max(0.2, speed)
     base_lit = scale(base, brightness)
     accent_lit = scale(accent, brightness)
+    bass, middle, treble = (audio_bands if len(audio_bands) == 3 else
+                            (audio_level,) * 3)
+    width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
             color = base_lit
@@ -105,17 +121,20 @@ def render(effect, now, base, accent, brightness, speed, events,
             color = scale(mix(base_lit, accent_lit,
                               0.5 + 0.5 * math.sin(t * 0.7)), level)
         elif effect == "rainbow":
-            wave = 0.5 + 0.5 * math.sin(x / 90 + y / 145 - t * 1.2)
+            wave = 0.5 + 0.5 * math.sin(x / (90 * width) +
+                                        y / (145 * width) - t * 1.2)
             color = mix(base_lit, accent_lit, wave)
         elif effect == "aurora":
-            wave = 0.5 + 0.5 * math.sin(x / 82 + t * 1.5 + math.sin(y / 55 + t))
+            wave = 0.5 + 0.5 * math.sin(x / (82 * width) + t * 1.5 +
+                                        math.sin(y / (55 * width) + t))
             color = mix(base_lit, accent_lit, wave)
         elif effect == "meteor":
             head = ((t * 190) % 1000) - 80
             distance = x - head
-            glow = math.exp(-max(0, distance) / 82) if 0 <= distance < 360 else 0
-            if -20 <= distance < 0:
-                glow = 1 - abs(distance) / 20
+            glow = (math.exp(-max(0, distance) / (82 * width))
+                    if 0 <= distance < 360 * width else 0)
+            if -20 * width <= distance < 0:
+                glow = 1 - abs(distance) / (20 * width)
             color = mix(scale(base_lit, 0.17), accent_lit, glow)
         elif effect == "twinkle":
             step = int(t * 2.4)
@@ -129,13 +148,14 @@ def render(effect, now, base, accent, brightness, speed, events,
             column = round(x / 39)
             fall = (t * 2.1 + noise(column * 23) * 5.8) % 7
             row = (y - 53) / 40
-            glow = math.exp(-((row - fall) ** 2) / 0.37)
+            glow = math.exp(-((row - fall) ** 2) / (0.37 * width * width))
             color = mix(scale(base_lit, 0.15), accent_lit, glow)
         elif effect == "spiral":
             dx, dy = (x - 441) / 400, (y - 175) / 150
             angle = math.atan2(dy, dx) / (2 * math.pi)
             radius = math.hypot(dx, dy)
-            wave = 0.5 + 0.5 * math.sin((angle + radius * 0.46) * 2 * math.pi - t * 1.7)
+            wave = 0.5 + 0.5 * math.sin((angle + radius * 0.46) *
+                                        2 * math.pi / width - t * 1.7)
             color = mix(base_lit, accent_lit, wave)
         elif effect == "fire":
             height = (y - 53) / 245
@@ -146,20 +166,21 @@ def render(effect, now, base, accent, brightness, speed, events,
         elif effect == "color_cycle":
             color = mix(base_lit, accent_lit, 0.5 + 0.5 * math.sin(t * 1.15))
         elif effect == "gradient_wave":
-            wave = 0.5 + 0.5 * math.sin(x / 145 - y / 115 - t * 1.35)
+            wave = 0.5 + 0.5 * math.sin(x / (145 * width) -
+                                        y / (115 * width) - t * 1.35)
             color = mix(base_lit, accent_lit, wave)
         elif effect == "visor":
             phase = (t * 0.28) % 2
             head = 55 + 760 * (1 - abs(phase - 1))
-            glow = math.exp(-((x - head) / 72) ** 2)
+            glow = math.exp(-((x - head) / (72 * width)) ** 2)
             color = mix(scale(base_lit, 0.32), accent_lit, glow)
         elif effect == "bubbles":
             glow = 0.0
             for bubble in range(4):
                 cx = 50 + ((noise(bubble * 11 + 3) * 750 + t * (24 + bubble * 7)) % 820)
                 cy = 165 + 95 * math.sin(t * (0.6 + bubble * 0.09) + bubble * 2.2)
-                glow = max(glow, math.exp(-((x - cx) / 78) ** 2 -
-                                           ((y - cy) / 65) ** 2))
+                glow = max(glow, math.exp(-((x - cx) / (78 * width)) ** 2 -
+                                           ((y - cy) / (65 * width)) ** 2))
             color = mix(scale(base_lit, 0.4), accent_lit, glow)
         elif effect == "mosaic":
             tile = int(x / 78) * 41 + int(y / 53) * 131
@@ -174,65 +195,87 @@ def render(effect, now, base, accent, brightness, speed, events,
             color = mix(base_lit, accent_lit, blend)
         elif effect == "breathing_circle":
             distance = math.hypot((x - 441) / 110, (y - 175) / 100)
-            wave = 0.5 + 0.5 * math.sin(distance * 2.7 - t * 1.6)
+            wave = 0.5 + 0.5 * math.sin(distance * 2.7 / width - t * 1.6)
             color = mix(base_lit, accent_lit, wave)
         elif effect == "cross_beams":
             left = 70 + (t * 90) % 850
             right = 820 - (t * 72) % 850
-            glow = max(math.exp(-((x - left) / 58) ** 2),
-                       0.85 * math.exp(-((x - right) / 70) ** 2))
+            glow = max(math.exp(-((x - left) / (58 * width)) ** 2),
+                       0.85 * math.exp(-((x - right) / (70 * width)) ** 2))
             color = mix(scale(base_lit, 0.3), accent_lit, glow)
         elif effect == "comet":
             head = (t * 160) % 1100 - 110
             tail = x - head
-            glow = math.exp(tail / 105) if -400 < tail <= 0 else 0.0
-            glow *= math.exp(-((y - 170 - 55 * math.sin(t * 0.7)) / 100) ** 2)
+            glow = math.exp(tail / (105 * width)) if -400 * width < tail <= 0 else 0.0
+            glow *= math.exp(-((y - 170 - 55 * math.sin(t * 0.7)) /
+                                (100 * width)) ** 2)
             color = mix(scale(base_lit, 0.2), accent_lit, glow)
         elif effect == "audio_pulse":
-            pulse = min(1.0, audio_level * 0.76 + audio_impact * 0.28)
-            color = mix(scale(base_lit, 0.26), accent_lit, pulse)
+            pulse = min(1.0, bass * 0.50 + middle * 0.24 +
+                        audio_level * 0.16 + audio_impact * 0.28)
+            color = mix(scale(base_lit, 0.20), accent_lit, pulse)
         elif effect == "audio_wave":
             distance = math.hypot(x - 441, y - 175)
             # A quiet travelling ring remains visible between detected beats.
             # This also gives non-percussive music a continuous response.
-            flow = 0.5 + 0.5 * math.cos(distance / 53 - t * 4.2)
-            glow = audio_level * (0.10 + flow * 0.32)
+            flow = 0.5 + 0.5 * math.cos(distance / (53 * width) - t * 3.8)
+            glow = audio_level * 0.08 + middle * flow * 0.38
             for started in audio_beats:
                 age = now - started
                 if 0 <= age < 1.5:
                     front = age * 440 * speed
-                    ring = math.exp(-((distance - front) / 52) ** 2)
-                    glow = max(glow, ring * (1 - age / 1.5) ** 0.55)
+                    ring = math.exp(-((distance - front) / (52 * width)) ** 2)
+                    envelope = min(1.0, age / 0.06) * (1 - age / 1.5) ** 0.55
+                    glow = max(glow, ring * envelope)
             color = mix(scale(base_lit, 0.30), accent_lit, glow)
         elif effect == "audio_ribbon":
-            center = 173 + math.sin(x / 92 - t * 2.8) * (13 + audio_level * 95)
-            ribbon = math.exp(-((y - center) / 36) ** 2)
-            shimmer = 0.72 + 0.28 * math.sin(x / 47 + t * 3.2)
-            glow = ribbon * shimmer * min(1.0, 0.26 + audio_level * 0.78 +
-                                           audio_impact * 0.18)
+            center = 173 + math.sin(x / 92 - t * 3.0) * (
+                13 + bass * 104)
+            ribbon = math.exp(-((y - center) / (36 * width)) ** 2)
+            shimmer = 0.70 + 0.30 * math.sin(x / 47 + t * 3.5)
+            glow = ribbon * shimmer * min(1.0, 0.12 + middle * 0.58 +
+                                           treble * 0.24 + audio_impact * 0.18)
             color = mix(scale(base_lit, 0.28), accent_lit, glow)
         elif effect == "audio_stars":
             step = int(t * 2.7)
             phase = (t * 2.7) % 1
-            density = 0.10 + audio_level * 0.37
+            density = 0.07 + treble * 0.40
             pick = noise(led * 31 + step * 17)
             glow = max(0.0, min(1.0, (pick - (1 - density)) / density))
-            glow *= math.sin(math.pi * phase) * (0.36 + audio_level * 0.64)
+            glow *= math.sin(math.pi * phase) * (0.12 + treble * 0.88)
             color = mix(scale(base_lit, 0.24), accent_lit, glow)
         elif effect == "audio_meter":
             distance = abs(x - 441)
-            edge = audio_level * 400
-            fill = max(0.0, min(1.0, (edge - distance + 15) / 43))
-            marker = math.exp(-((distance - edge) / 31) ** 2) * audio_level
+            energy = min(1.0, bass * 0.40 + middle * 0.37 +
+                         audio_level * 0.23 + audio_impact * 0.13)
+            edge = energy * 400
+            fill = smoothstep(distance - 55 * width,
+                              distance + 60 * width, edge)
+            marker = math.exp(-((distance - edge) / (31 * width)) ** 2) * energy
             color = mix(scale(base_lit, 0.24), accent_lit,
                         min(1.0, fill * 0.78 + marker * 0.22))
         elif effect == "audio_flash":
-            glow = max(audio_level * 0.10, audio_impact * 0.32)
+            glow = max(bass * 0.10, audio_impact * 0.32)
             for started in audio_beats:
                 age = now - started
                 if 0 <= age < 0.8:
-                    glow = max(glow, math.exp(-age * 5.2))
+                    flash = (1 - math.exp(-age * 38)) * math.exp(-age * 5.2)
+                    glow = max(glow, flash)
             color = mix(scale(base_lit, 0.30), accent_lit, glow)
+        elif effect == "audio_spectrum":
+            bass_to_mid = smoothstep(320 - 50 * width,
+                                     320 + 50 * width, x)
+            mid_to_high = smoothstep(610 - 55 * width,
+                                     610 + 55 * width, x)
+            driven_bass = min(1.0, bass + audio_impact * 0.16)
+            band = (driven_bass * (1 - bass_to_mid) + middle * bass_to_mid)
+            band = band * (1 - mid_to_high) + treble * mid_to_high
+            height = 300 - band * 280
+            fill = smoothstep(height - 40 * width,
+                              height + 85 * width, y)
+            crest = math.exp(-((y - height) / (48 * width)) ** 2) * band
+            color = mix(scale(base_lit, 0.18), accent_lit,
+                        min(1.0, fill * 0.82 + crest * 0.18))
         else:
             color = base_lit
 
@@ -254,48 +297,51 @@ def render(effect, now, base, accent, brightness, speed, events,
                     # each key its own short dark pulse when the wave reaches
                     # it, so the real keyboard cannot skip a thin ring.
                     reached = age - distance / (13.0 * max(0.2, speed))
-                    hold = 0.13 * ripple_width
+                    hold = 0.13 * width
                     if reached < 0:
                         strength = 0.0
                     elif reached <= hold:
                         strength = 1.0
                     else:
                         strength = math.exp(-(reached - hold) /
-                                            (0.09 * ripple_width))
+                                            (0.09 * width))
                 elif effect == "key_bloom":
-                    radius = 28 + age * 130 * speed
+                    radius = (28 + age * 130 * speed) * width
                     strength = math.exp(-(distance * 40 / radius) ** 2) * (1 - age / lifetime)
                 elif effect == "typing_trail":
                     previous = (NAME_CENTERS.get(events[event_index - 1][0])
                                 if event_index else None)
                     line_distance = (segment_distance(x, y, *previous, *origin)
                                      if previous else distance * 39)
-                    strength = math.exp(-((line_distance / 37) ** 2)) * (1 - age / lifetime)
+                    strength = math.exp(-((line_distance / (37 * width)) ** 2)) * (1 - age / lifetime)
                 elif effect == "key_sweep":
                     front = age * 430 * speed
-                    strength = (math.exp(-((abs(x - origin[0]) - front) / 52) ** 2)
-                                * math.exp(-((y - origin[1]) / 75) ** 2)
+                    strength = (math.exp(-((abs(x - origin[0]) - front) /
+                                           (52 * width)) ** 2)
+                                * math.exp(-((y - origin[1]) / (75 * width)) ** 2)
                                 * (1 - age / lifetime))
                 elif effect == "key_rain":
                     fall = origin[1] + age * 255 * speed
-                    strength = (math.exp(-((x - origin[0]) / 45) ** 2
-                                         - ((y - fall) / 49) ** 2)
+                    strength = (math.exp(-((x - origin[0]) / (45 * width)) ** 2
+                                         - ((y - fall) / (49 * width)) ** 2)
                                 * (1 - age / lifetime))
                 elif effect == "heatmap":
-                    strength = math.exp(-distance * distance / 1.4) * (1 - age / lifetime)
+                    strength = math.exp(-distance * distance /
+                                        (1.4 * width * width)) * (1 - age / lifetime)
                     strongest = min(1.0, strongest + strength * 0.58)
                     continue
                 elif effect == "key_cross":
-                    strength = (max(math.exp(-((x - origin[0]) / 31) ** 2),
-                                    math.exp(-((y - origin[1]) / 31) ** 2))
+                    strength = (max(math.exp(-((x - origin[0]) / (31 * width)) ** 2),
+                                    math.exp(-((y - origin[1]) / (31 * width)) ** 2))
                                 * (1 - age / lifetime) ** 2)
                 elif effect == "key_sparks":
                     stagger = 0.08 + 0.46 * noise(led * 19 + origin[0] * 0.1)
-                    near = math.exp(-(distance / 3.5) ** 2)
+                    near = math.exp(-(distance / (3.5 * width)) ** 2)
                     strength = (near * math.exp(-((age - stagger) / 0.13) ** 2)
                                 * (1 - age / lifetime))
                 else:
-                    strength = math.exp(-distance * distance / 0.65) * (1 - age / lifetime)
+                    strength = math.exp(-distance * distance /
+                                        (0.65 * width * width)) * (1 - age / lifetime)
                 strongest = max(strongest, strength)
             color = mix(color, accent_lit, strongest)
         result[led] = color

@@ -1,6 +1,7 @@
 import ctypes
 import json
 import logging
+import math
 import queue
 import threading
 import time
@@ -8,7 +9,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from effects import EFFECT_IDS, MUSIC, REACTIVE, render, ripple_lifetime, reactive_lifetime
-from audio_meter import AudioMeter
+from audio_spectrum import AudioSpectrum
 from layout import NAME_CENTERS, NAME_LEDS
 
 LOG = logging.getLogger("vgn-ripple")
@@ -315,10 +316,13 @@ class LightingController:
         self.user32.CallNextHookEx.restype = ctypes.c_ssize_t
         self.events = queue.Queue()
         self.ripples = []
-        self.audio_meter = AudioMeter()
+        self.audio_meter = AudioSpectrum()
         self.audio_level = 0.0
         self.audio_beats = []
         self.audio_last_beat = 0.0
+        self.audio_seen_beat = 0
+        self.music_frame = None
+        self.music_frame_at = 0.0
         self.down_keys = set()
         self.transport = None
         self.preference = "auto"
@@ -404,6 +408,11 @@ class LightingController:
         self.ripples_enabled = active
         self.ripples.clear()
         self.audio_beats.clear()
+        self.audio_seen_beat = self.audio_meter.beat_serial
+        self.music_frame = None
+        if not active:
+            self.audio_meter.close()
+            self.audio_level = 0.0
         self.down_keys.clear()
         with self.worker_lock:
             self.worker_pending_events.clear()
@@ -414,6 +423,8 @@ class LightingController:
         self.effect = effect
         self.ripples.clear()
         self.audio_beats.clear()
+        self.audio_seen_beat = self.audio_meter.beat_serial
+        self.music_frame = None
         if effect not in MUSIC:
             self.audio_meter.close()
             self.audio_level = 0.0
@@ -504,12 +515,14 @@ class LightingController:
         now = now if now is not None else time.perf_counter()
         if self.ripples_enabled and self.effect in MUSIC:
             self.audio_level = self.audio_meter.sample()
-            # Detect a short rise against the recent playback level. A fixed
-            # volume threshold missed almost every beat at modest PC volume.
-            if (self.audio_meter.instant > 0.16 and
-                    self.audio_meter.impact > 0.16 and
-                    self.audio_meter.rise > 0.045 and
-                    now - self.audio_last_beat > 0.22):
+            if self.audio_meter.mode == "spectrum":
+                if self.audio_meter.beat_serial != self.audio_seen_beat:
+                    self.audio_beats.append(self.audio_meter.beat_time)
+                    self.audio_seen_beat = self.audio_meter.beat_serial
+            elif (self.audio_meter.instant > 0.16 and
+                  self.audio_meter.impact > 0.16 and
+                  self.audio_meter.rise > 0.045 and
+                  now - self.audio_last_beat > 0.22):
                 self.audio_beats.append(now)
                 self.audio_last_beat = now
             self.audio_beats = [started for started in self.audio_beats
@@ -544,10 +557,26 @@ class LightingController:
                         if now - started < lifetime]
         if not self.ripples_enabled:
             return [self.base_color()] * MAX_LED
-        return render(self.effect, now, self.base, self.accent,
-                      self.brightness, self.speed, self.ripples,
-                      self.ripple_width, self.audio_level, self.audio_beats,
-                      self.audio_meter.impact)
+        target = render(self.effect, now, self.base, self.accent,
+                        self.brightness, self.speed, self.ripples,
+                        self.ripple_width, self.audio_level, self.audio_beats,
+                        self.audio_meter.impact, self.audio_meter.bands)
+        if self.effect not in MUSIC:
+            return target
+        if self.music_frame is None or len(self.music_frame) != len(target):
+            self.music_frame = target
+        else:
+            elapsed = max(0.0, min(0.25, now - self.music_frame_at))
+            attack_time = 0.055 if self.effect in ("audio_wave", "audio_flash") else 0.09
+            rise = 1 - math.exp(-elapsed / attack_time)
+            fall = 1 - math.exp(-elapsed / 0.22)
+            self.music_frame = [
+                tuple(round(old + (new - old) * (rise if new > old else fall))
+                      for old, new in zip(previous, desired))
+                for previous, desired in zip(self.music_frame, target)
+            ]
+        self.music_frame_at = now
+        return self.music_frame
 
     def _install_hook(self):
         if self.hook:

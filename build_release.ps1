@@ -23,7 +23,8 @@ $pyinstallerArgs = @(
   '--add-data', 'ui.qss;.', '--add-data', 'keyboard_map.json;.',
   '--add-data', 'assets\ripple.ico;assets',
   '--add-data', 'assets\ripple.png;assets',
-  '--add-data', 'assets\ripple.svg;assets', 'main.py'
+  '--add-data', 'assets\ripple.svg;assets',
+  '--add-data', 'third_party;third_party', 'main.py'
 )
 & $pythonExe @pyinstallerArgs
 if ($LASTEXITCODE -ne 0) { throw 'Application build failed.' }
@@ -35,5 +36,5 @@ if (Test-Path -LiteralPath $shadowIcu) {
 }
 & $compilerExe 'installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
-Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.1.1.exe') |
+Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.2.0.exe') |
   Select-Object FullName, Length, LastWriteTime
