@@ -1,8 +1,9 @@
 """Independent per-key animations.  Coordinates are the photographed keycaps."""
 
+import bisect
 import math
 
-from layout import LED_CENTERS, NAME_CENTERS
+from layout import KEYCAPS, LED_CENTERS, NAME_CENTERS
 
 
 EFFECTS = (
@@ -40,23 +41,42 @@ EFFECTS = (
     ("audio_meter", "音量刻度", "灯光长度跟随播放音量"),
     ("audio_flash", "重拍闪光", "强音到来时短促闪亮"),
     ("audio_spectrum", "三频跃动", "低频、中频和高频分区起伏"),
+    ("audio_ecg", "心电律动", "音乐绘成滚动心电线，鼓点让爱心跳动"),
 )
 EFFECT_IDS = {item[0] for item in EFFECTS}
 REACTIVE = {"ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
             "key_rain", "heatmap", "key_cross", "key_sparks"}
 MUSIC = {"audio_pulse", "audio_wave", "audio_ribbon", "audio_stars",
-         "audio_meter", "audio_flash", "audio_spectrum"}
+         "audio_meter", "audio_flash", "audio_spectrum", "audio_ecg"}
 WIDTH_EFFECTS = {
     "rainbow", "aurora", "meteor", "rain", "spiral", "gradient_wave",
     "visor", "bubbles", "breathing_circle", "cross_beams", "comet",
     "ripple", "reactive", "key_bloom", "typing_trail", "key_sweep",
     "key_rain", "heatmap", "key_cross", "key_sparks",
     "audio_wave", "audio_ribbon", "audio_meter", "audio_spectrum",
+    "audio_ecg",
 }
 CATEGORIES = (
     ("regular", "常规灯效", "持续流动与氛围"),
     ("reactive", "互动灯效", "跟随你的每次按键"),
     ("music", "音乐交互", "响应电脑正在播放的声音"),
+)
+# Use single-width, independently addressable keycaps for a readable pixel
+# heart.  This unit's Fn LED does not respond, and LED 84 lights Left Alt.
+HEART_PATH = (
+    (435, 241), (392, 219), (347, 196), (307, 171),
+    (282, 139), (267, 105), (276, 78), (299, 57),
+    (328, 53), (357, 65), (389, 99), (435, 126),
+    (462, 92), (491, 62), (520, 53), (548, 63),
+    (563, 88), (558, 120), (536, 155), (497, 194),
+    (435, 241),
+)
+HEART_PIXEL_KEYS = (
+    "F5", "F6", "F9", "F10",
+    "6", "7", "8", "0", "-_", "=+",
+    "Y", "U", "I", "O", "P", "[",
+    "J", "K", "L", ";",
+    ",",
 )
 EFFECT_CATEGORY = {effect_id: ("music" if effect_id in MUSIC else
                                "reactive" if effect_id in REACTIVE else "regular")
@@ -102,9 +122,46 @@ def segment_distance(px, py, ax, ay, bx, by):
     return math.hypot(px - ax - fraction * dx, py - ay - fraction * dy)
 
 
+def ecg_spike(sample_time, beats):
+    """A compact P-QRS-T peak with a quick return to the baseline."""
+    value = 0.0
+    for started in beats:
+        delta = sample_time - started
+        if -0.20 < delta < 0.26:
+            value += (0.10 * math.exp(-((delta + 0.15) / 0.035) ** 2)
+                      - 0.25 * math.exp(-((delta + 0.065) / 0.028) ** 2)
+                      + 1.15 * math.exp(-(delta / 0.065) ** 2)
+                      - 0.40 * math.exp(-((delta - 0.075) / 0.03) ** 2)
+                      + 0.11 * math.exp(-((delta - 0.17) / 0.045) ** 2))
+    return max(-0.55, min(1.25, value))
+
+
+def ecg_trace_at(samples, times, target_time):
+    if not samples or target_time < times[0]:
+        return 0.0
+    index = bisect.bisect_left(times, target_time)
+    if index >= len(samples):
+        return samples[-1][1]
+    if index == 0:
+        return samples[0][1]
+    previous_time, previous_value = samples[index - 1]
+    next_time, next_value = samples[index]
+    fraction = (target_time - previous_time) / max(0.001, next_time - previous_time)
+    return previous_value + (next_value - previous_value) * fraction
+
+
+def inside_polygon(x, y, points):
+    inside = False
+    for index, (x1, y1) in enumerate(points[:-1]):
+        x2, y2 = points[index + 1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
 def render(effect, now, base, accent, brightness, speed, events,
            ripple_width=1.0, audio_level=0.0, audio_beats=(),
-           audio_impact=0.0, audio_bands=()):
+           audio_impact=0.0, audio_bands=(), audio_trace=()):
     """Return one RGB color per supported LED, indexed by physical LED ID."""
     result = [(0, 0, 0)] * max(105, max(LED_CENTERS, default=0) + 1)
     t = now * max(0.2, speed)
@@ -122,6 +179,14 @@ def render(effect, now, base, accent, brightness, speed, events,
         beat_energy = max((math.exp(-(now - started) / 0.18)
                            for started in audio_beats
                            if 0 <= now - started < 0.9), default=0.0)
+    trace_times = [sample[0] for sample in audio_trace] if effect == "audio_ecg" else ()
+    heart_beat = (max((math.exp(-(now - started) / 0.32)
+                       for started in audio_beats
+                       if 0 <= now - started < 1.25), default=0.0)
+                  if effect == "audio_ecg" else 0.0)
+    heart_leds = ({led for cap in KEYCAPS
+                   if cap.name in HEART_PIXEL_KEYS
+                   for led in cap.leds} if effect == "audio_ecg" else set())
     width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
@@ -286,12 +351,35 @@ def render(effect, now, base, accent, brightness, speed, events,
             crest = math.exp(-((y - height) / (48 * width)) ** 2) * band
             color = mix(scale(base_lit, 0.18), accent_lit,
                         min(1.0, fill * 0.82 + crest * 0.18))
+        elif effect == "audio_ecg":
+            color = (0, 0, 0)
+            # Draw a connected waveform across the whole board.  The segment
+            # spans adjacent key columns so a rising note does not turn into
+            # isolated specks when the sampled heights differ.
+            def wave_height(px):
+                sample_time = now - (810 - px) / (420 * max(0.45, speed))
+                signal = ecg_trace_at(audio_trace, trace_times, sample_time)
+                return 198 - signal * 76 - ecg_spike(
+                    sample_time, audio_beats) * 90
+            distance = segment_distance(x, y, x - 23, wave_height(x - 23),
+                                        x + 23, wave_height(x + 23))
+            thickness = 10 + 5 * width
+            moving_line = math.exp(-((distance / thickness) ** 2))
+            resting_line = 0.19 * math.exp(-(((y - 198) / 20) ** 2))
+            line = max(resting_line, moving_line)
+            if led in heart_leds:
+                color = scale(accent_lit, 0.50 + 0.50 * heart_beat)
+            elif inside_polygon(x, y, HEART_PATH):
+                color = (0, 0, 0)
+            else:
+                color = scale(base_lit, line)
         else:
             color = base_lit
 
         if effect in MUSIC:
-            # Preserve the spatial ring as the main event in audio_wave.
-            beat_gain = 0.10 if effect == "audio_wave" else 0.28
+            # Keep the ring and heart shapes distinct from the shared beat tint.
+            beat_gain = (0.0 if effect == "audio_ecg" else
+                         0.10 if effect == "audio_wave" else 0.28)
             color = mix(color, accent_lit, beat_energy * beat_gain)
 
         if effect in REACTIVE:

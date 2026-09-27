@@ -319,6 +319,9 @@ class LightingController:
         self.audio_meter = AudioSpectrum()
         self.audio_level = 0.0
         self.audio_beats = []
+        self.audio_trace = []
+        self.audio_trace_baseline = None
+        self.audio_trace_value = 0.0
         self.audio_last_beat = 0.0
         self.audio_seen_beat = 0
         self.music_frame = None
@@ -408,6 +411,9 @@ class LightingController:
         self.ripples_enabled = active
         self.ripples.clear()
         self.audio_beats.clear()
+        self.audio_trace.clear()
+        self.audio_trace_baseline = None
+        self.audio_trace_value = 0.0
         self.audio_seen_beat = self.audio_meter.beat_serial
         self.music_frame = None
         if not active:
@@ -423,6 +429,9 @@ class LightingController:
         self.effect = effect
         self.ripples.clear()
         self.audio_beats.clear()
+        self.audio_trace.clear()
+        self.audio_trace_baseline = None
+        self.audio_trace_value = 0.0
         self.audio_seen_beat = self.audio_meter.beat_serial
         self.music_frame = None
         if effect not in MUSIC:
@@ -525,8 +534,26 @@ class LightingController:
                   now - self.audio_last_beat > 0.22):
                 self.audio_beats.append(now)
                 self.audio_last_beat = now
+            trace_lifetime = max(2.2, 2.2 / max(0.45, self.speed))
+            beat_lifetime = trace_lifetime if self.effect == "audio_ecg" else 1.6
             self.audio_beats = [started for started in self.audio_beats
-                                if now - started < 1.6][-12:]
+                                if now - started < beat_lifetime][-24:]
+            if self.effect == "audio_ecg":
+                bass, middle, treble = self.audio_meter.bands
+                raw = (self.audio_level * 0.35 + bass * 0.40 +
+                       middle * 0.20 + treble * 0.05)
+                if self.audio_trace_baseline is None:
+                    self.audio_trace_baseline = raw
+                else:
+                    rate = 0.055 if raw > self.audio_trace_baseline else 0.15
+                    self.audio_trace_baseline += (raw - self.audio_trace_baseline) * rate
+                target = max(-0.65, min(0.65,
+                                        (raw - self.audio_trace_baseline) * 3.3))
+                response = 0.24 if target > self.audio_trace_value else 0.38
+                self.audio_trace_value += (target - self.audio_trace_value) * response
+                self.audio_trace.append((now, self.audio_trace_value))
+                self.audio_trace = [point for point in self.audio_trace
+                                    if now - point[0] < trace_lifetime][-800:]
         elif self.audio_meter.available:
             self.audio_meter.close()
             self.audio_level = 0.0
@@ -560,8 +587,11 @@ class LightingController:
         target = render(self.effect, now, self.base, self.accent,
                         self.brightness, self.speed, self.ripples,
                         self.ripple_width, self.audio_level, self.audio_beats,
-                        self.audio_meter.impact, self.audio_meter.bands)
-        if self.effect not in MUSIC:
+                        self.audio_meter.impact, self.audio_meter.bands,
+                        self.audio_trace)
+        # Moving one-key-wide graphics must clear their previous positions in
+        # the same frame; the shared music decay otherwise paints a wide trail.
+        if self.effect not in MUSIC or self.effect == "audio_ecg":
             return target
         if self.music_frame is None or len(self.music_frame) != len(target):
             self.music_frame = target

@@ -917,9 +917,12 @@ class MainWindow(QMainWindow):
         self.effect_palettes[self.engine.effect] = (self.engine.base, self.engine.accent)
         palette = self.effect_palettes.get(effect)
         if palette is None:
-            accent = (self.engine.accent if self.engine.accent != (0, 0, 0)
-                      or effect == "ripple" else (196, 239, 112))
-            palette = (self.engine.base, accent)
+            if effect == "audio_ecg":
+                palette = ((255, 81, 177), (255, 64, 91))
+            else:
+                accent = (self.engine.accent if self.engine.accent != (0, 0, 0)
+                          or effect == "ripple" else (196, 239, 112))
+                palette = (self.engine.base, accent)
             self.effect_palettes[effect] = palette
         self.engine.set_effect(effect)
         self.engine.base, self.engine.accent = palette
@@ -958,6 +961,8 @@ class MainWindow(QMainWindow):
     def _update_palette_hint(self):
         if self.engine.effect == "ripple":
             hint = "波纹色就是按键后扩散的颜色，默认黑色；打开色盘即可实时调整。"
+        elif self.engine.effect == "audio_ecg":
+            hint = "心电线记录音乐起伏，爱心随鼓点跳动；两种颜色都能自由调整。"
         elif self.engine.effect == "solid":
             hint = "全键常亮只使用底色。"
         elif self.engine.effect in MUSIC:
@@ -1104,8 +1109,10 @@ class MainWindow(QMainWindow):
             self.save_timer.start()
 
     def _update_color_buttons(self):
-        accent_label = "波纹色" if self.engine.effect == "ripple" else "点缀色"
-        for button, label, value in ((self.base_button, "底色", self.engine.base),
+        base_label = "心电线" if self.engine.effect == "audio_ecg" else "底色"
+        accent_label = ("爱心色" if self.engine.effect == "audio_ecg" else
+                        "波纹色" if self.engine.effect == "ripple" else "点缀色")
+        for button, label, value in ((self.base_button, base_label, self.engine.base),
                                      (self.accent_button, accent_label, self.engine.accent)):
             button.setIcon(swatch_icon(value))
             button.setText(f"{label}    {color_hex(value)}")
@@ -1117,7 +1124,9 @@ class MainWindow(QMainWindow):
         self.editing_color = target
         self.editing_original = (self.engine.base, self.engine.accent)
         self.editor_title.setText(
+            "修改心电线颜色" if target == "base" and self.engine.effect == "audio_ecg" else
             "修改底色" if target == "base" else
+            "修改爱心颜色" if self.engine.effect == "audio_ecg" else
             "修改波纹色" if self.engine.effect == "ripple" else "修改点缀色")
         self.hex_input.setText(color_hex(self.engine.base if target == "base"
                                          else self.engine.accent))
