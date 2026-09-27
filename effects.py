@@ -112,6 +112,16 @@ def render(effect, now, base, accent, brightness, speed, events,
     accent_lit = scale(accent, brightness)
     bass, middle, treble = (audio_bands if len(audio_bands) == 3 else
                             (audio_level,) * 3)
+    beat_energy = 0.0
+    if effect in MUSIC:
+        # One response curve for every music effect, including future ones:
+        # quieter sustained lows/mids and a short, clearly timed beat accent.
+        bass *= 0.70
+        middle *= 0.55
+        audio_level *= 0.70
+        beat_energy = max((math.exp(-(now - started) / 0.18)
+                           for started in audio_beats
+                           if 0 <= now - started < 0.9), default=0.0)
     width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
@@ -278,6 +288,11 @@ def render(effect, now, base, accent, brightness, speed, events,
                         min(1.0, fill * 0.82 + crest * 0.18))
         else:
             color = base_lit
+
+        if effect in MUSIC:
+            # Preserve the spatial ring as the main event in audio_wave.
+            beat_gain = 0.10 if effect == "audio_wave" else 0.28
+            color = mix(color, accent_lit, beat_energy * beat_gain)
 
         if effect in REACTIVE:
             strongest = 0.0

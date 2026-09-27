@@ -111,8 +111,8 @@ class AudioSpectrum:
                                        max(0.001, fast_average))
                     now = time.perf_counter()
                     beat_pulse *= 0.82
-                    if (fast_bass > 0.006 and fast_impulse > 0.32 and
-                            fast_bass > previous_fast * 1.14 and
+                    if (fast_bass > 0.004 and fast_impulse > 0.20 and
+                            fast_bass > previous_fast * 1.08 and
                             now - last_beat > 0.23):
                         beat_serial += 1
                         last_fast_beat = last_beat = now
