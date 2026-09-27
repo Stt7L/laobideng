@@ -61,23 +61,24 @@ CATEGORIES = (
     ("reactive", "互动灯效", "跟随你的每次按键"),
     ("music", "音乐交互", "响应电脑正在播放的声音"),
 )
-# Use single-width, independently addressable keycaps for a readable pixel
-# heart.  This unit's Fn LED does not respond, and LED 84 lights Left Alt.
+# The static music image spans the main key block.  Its negative space stays
+# white; Backspace and backslash form a visible white boundary on the right.
 HEART_PATH = (
-    (435, 241), (392, 219), (347, 196), (307, 171),
-    (282, 139), (267, 105), (276, 78), (299, 57),
-    (328, 53), (357, 65), (389, 99), (435, 126),
-    (462, 92), (491, 62), (520, 53), (548, 63),
-    (563, 88), (558, 120), (536, 155), (497, 194),
-    (435, 241),
+    (435, 243), (385, 224), (300, 205), (225, 178),
+    (185, 145), (190, 106), (235, 70), (292, 53),
+    (352, 66), (408, 115), (435, 135),
+    (465, 103), (515, 64), (572, 53), (626, 68),
+    (657, 104), (657, 142), (622, 177), (540, 214),
+    (435, 243),
 )
-HEART_PIXEL_KEYS = (
-    "F5", "F6", "F9", "F10",
-    "6", "7", "8", "0", "-_", "=+",
-    "Y", "U", "I", "O", "P", "[",
-    "J", "K", "L", ";",
-    ",",
-)
+HEART_WHITE_KEYS = {"Backspace", "\\"}
+HEART_PIXEL_KEYS = {
+    "F4", "F5", "F6", "F9", "F10", "F11",
+    "5", "6", "7", "8", "0", "-_", "=+",
+    "R", "T", "Y", "U", "I", "O", "P", "[", "]",
+    "G", "H", "J", "K", "L", ";", "'",
+    "N", "M", ",", ".", "/",
+}
 EFFECT_CATEGORY = {effect_id: ("music" if effect_id in MUSIC else
                                "reactive" if effect_id in REACTIVE else "regular")
                    for effect_id in EFFECT_IDS}
@@ -184,9 +185,16 @@ def render(effect, now, base, accent, brightness, speed, events,
                        for started in audio_beats
                        if 0 <= now - started < 1.25), default=0.0)
                   if effect == "audio_ecg" else 0.0)
+    heart_white_leds = ({led for cap in KEYCAPS
+                         if cap.name in HEART_WHITE_KEYS
+                         for led in cap.leds} if effect == "audio_ecg" else set())
     heart_leds = ({led for cap in KEYCAPS
                    if cap.name in HEART_PIXEL_KEYS
-                   for led in cap.leds} if effect == "audio_ecg" else set())
+                   for led in cap.leds} |
+                  {cap.leds[-1] for cap in KEYCAPS
+                   if cap.name == "Space" and cap.leds}
+                  if effect == "audio_ecg" else set())
+    white_lit = scale((255, 255, 255), brightness) if effect == "audio_ecg" else None
     width = max(0.5, min(2.0, ripple_width))
     for led, (x, y) in LED_CENTERS.items():
         if effect in REACTIVE or effect == "solid":
@@ -352,7 +360,7 @@ def render(effect, now, base, accent, brightness, speed, events,
             color = mix(scale(base_lit, 0.18), accent_lit,
                         min(1.0, fill * 0.82 + crest * 0.18))
         elif effect == "audio_ecg":
-            color = (0, 0, 0)
+            color = white_lit
             # Draw a connected waveform across the whole board.  The segment
             # spans adjacent key columns so a rising note does not turn into
             # isolated specks when the sampled heights differ.
@@ -365,14 +373,19 @@ def render(effect, now, base, accent, brightness, speed, events,
                                         x + 23, wave_height(x + 23))
             thickness = 10 + 5 * width
             moving_line = math.exp(-((distance / thickness) ** 2))
-            resting_line = 0.19 * math.exp(-(((y - 198) / 20) ** 2))
-            line = max(resting_line, moving_line)
-            if led in heart_leds:
-                color = scale(accent_lit, 0.50 + 0.50 * heart_beat)
+            resting_line = 0.05 * math.exp(-(((y - 198) / 20) ** 2))
+            line_gain = min(1.0, audio_level * 6.0 + beat_energy * 0.2)
+            line = max(resting_line, moving_line * line_gain)
+            if led in heart_white_leds:
+                color = white_lit
+            elif led in heart_leds:
+                heart_color = mix(base_lit, accent_lit,
+                                  smoothstep(265, 580, x))
+                color = scale(heart_color, 0.78 + 0.22 * heart_beat)
             elif inside_polygon(x, y, HEART_PATH):
-                color = (0, 0, 0)
+                color = white_lit
             else:
-                color = scale(base_lit, line)
+                color = mix(white_lit, base_lit, line)
         else:
             color = base_lit
 

@@ -53,9 +53,10 @@ key("Backspace", "⌫", 568, 102, 76, 35, 28)
 key("Tab", "Tab", 57, 142, 51, 35, 30)
 for index, letter in enumerate("QWERTYUIOP"):
     key(letter, letter, 115 + index * 39, 142, 35, 35, 31 + index)
-for name, label, x, led in (("[", "[", 505, 41), ("]", "]", 544, 42),
-                            ("\\", "\\", 583, 43)):
+for name, label, x, led in (("[", "[", 505, 41), ("]", "]", 544, 42)):
     key(name, label, x, 142, 35, 35, led)
+# The backslash key fills the right edge of the row below Backspace.
+key("\\", "\\", 583, 142, 61, 35, 43)
 key("CapsLock", "Caps", 57, 182, 66, 35, 45)
 for index, letter in enumerate("ASDFGHJKL"):
     key(letter, letter, 126 + index * 39, 182, 35, 35, 46 + index)

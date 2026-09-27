@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QColorDialog, QDoubleSpinBox, QFrame,
@@ -25,7 +25,7 @@ from backend import LightingController, bluetooth_keyboard_present
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
 from device_detection import detect_keyboards, preferred_known_keyboard
 from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE, WIDTH_EFFECTS
-from layout import KEYCAPS, restore_v98_layout, set_keycaps
+from layout import KEYCAPS, LED_CENTERS, restore_v98_layout, set_keycaps
 
 
 ROOT = Path(__file__).resolve().parent
@@ -214,10 +214,35 @@ class KeyboardPreview(QWidget):
             rgb = tuple(round(sum(color[i] for color in colors) / len(colors))
                         for i in range(3)) if colors else (40, 46, 40)
             lit = QColor(*rgb)
-            surface = QColor(*(round(34 * 0.38 + c * 0.62) for c in rgb))
+            light_share = 0.86 if self.engine.effect == "audio_ecg" else 0.62
+            surface = QColor(*(round(34 * (1 - light_share) + c * light_share)
+                               for c in rgb))
             painter.setPen(QPen(lit.lighter(125), 1.2))
-            painter.setBrush(surface)
-            painter.drawRoundedRect(QRectF(cx, cy, cw, ch), 5, 5)
+            key_rect = QRectF(cx, cy, cw, ch)
+            led_segments = sorted((LED_CENTERS[led][0], frame[led])
+                                  for led in cap.leds
+                                  if led in LED_CENTERS and led < len(frame))
+            if len(led_segments) > 1 and led_segments[-1][0] - led_segments[0][0] > 5:
+                clip = QPainterPath()
+                clip.addRoundedRect(key_rect, 5, 5)
+                painter.save()
+                painter.setClipPath(clip)
+                edges = ([cx] +
+                         [(led_segments[i][0] + led_segments[i + 1][0]) / 2 - 48
+                          for i in range(len(led_segments) - 1)] +
+                         [cx + cw])
+                for index, (_, segment_rgb) in enumerate(led_segments):
+                    segment_color = QColor(*(
+                        round(34 * (1 - light_share) + c * light_share)
+                        for c in segment_rgb))
+                    painter.fillRect(QRectF(edges[index], cy,
+                                            edges[index + 1] - edges[index], ch),
+                                     segment_color)
+                painter.restore()
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                painter.setBrush(surface)
+            painter.drawRoundedRect(key_rect, 5, 5)
             light = sum(rgb) / 3
             painter.setPen(QColor("#172018") if light > 118 else QColor("#E5F0DC"))
             painter.drawText(QRectF(cx + 2, cy + 1, cw - 4, ch - 2),
