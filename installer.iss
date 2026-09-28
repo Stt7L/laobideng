@@ -1,4 +1,4 @@
-#define AppVersion "1.4.0"
+#define AppVersion "1.5.0"
 #define AppName "老必灯"
 
 [Setup]
@@ -20,12 +20,12 @@ SetupIconFile=assets\ripple.ico
 UninstallDisplayIcon={app}\老必灯.exe
 Compression=lzma2/ultra64
 SolidCompression=yes
-WizardStyle=modern dark polar includetitlebar hidebevels
-WizardBackColor=#141915
+WizardStyle=modern light polar includetitlebar hidebevels
+WizardBackColor=#F6F6F6
 WizardImageFile=assets\installer-banner.png
 WizardSmallImageFile=assets\ripple.png
-WizardImageBackColor=#141915
-WizardSmallImageBackColor=#202720
+WizardImageBackColor=#F6F6F6
+WizardSmallImageBackColor=#FFFFFF
 ShowLanguageDialog=no
 CloseApplications=yes
 RestartApplications=no

@@ -15,11 +15,11 @@ canvas.fill(Qt.GlobalColor.transparent)
 painter = QPainter(canvas)
 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 painter.setPen(Qt.PenStyle.NoPen)
-painter.setBrush(QColor("#202720"))
+painter.setBrush(QColor("#151515"))
 painter.drawRoundedRect(QRectF(8, 8, 496, 496), 116, 116)
 for color, width, points in (
-    ("#6A8B51", 17, ((287, 94), (431, 147), (431, 365), (287, 418))),
-    ("#AAD77A", 20, ((259, 160), (343, 190), (343, 322), (259, 352))),
+    ("#777777", 17, ((287, 94), (431, 147), (431, 365), (287, 418))),
+    ("#F1F1F1", 20, ((259, 160), (343, 190), (343, 322), (259, 352))),
 ):
     path = QPainterPath()
     path.moveTo(*points[0])
@@ -30,9 +30,9 @@ for color, width, points in (
     painter.setBrush(Qt.BrushStyle.NoBrush)
     painter.drawPath(path)
 painter.setPen(Qt.PenStyle.NoPen)
-painter.setBrush(QColor("#C4EF70"))
+painter.setBrush(QColor("#FFFFFF"))
 painter.drawRoundedRect(QRectF(147, 193, 126, 126), 33, 33)
-painter.setBrush(QColor("#E8F9CD"))
+painter.setBrush(QColor("#E8E8E8"))
 painter.drawRoundedRect(QRectF(165, 208, 90, 18), 9, 9)
 painter.end()
 canvas.save(str(root / "ripple.png"))

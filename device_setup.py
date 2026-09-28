@@ -186,7 +186,7 @@ class LayoutCanvas(QWidget):
         frame = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
         path = QPainterPath()
         path.addRoundedRect(frame, 16, 16)
-        painter.fillPath(path, QColor("#1D241E"))
+        painter.fillPath(path, QColor("#FFFFFF"))
         if not self.photo.isNull():
             painter.setClipPath(path)
             painter.drawPixmap(self.rect(), self.photo)
@@ -194,19 +194,19 @@ class LayoutCanvas(QWidget):
         for index, cap in enumerate(self.caps):
             selected = index == self.selected
             hovered = index == self.hovered
-            painter.setPen(QPen(QColor("#E5FFBA" if selected else
-                                       "#C4EF70" if hovered else "#91B869"),
+            painter.setPen(QPen(QColor("#171717" if selected else
+                                       "#5A5A5A" if hovered else "#A8A8A8"),
                                 2 if selected or hovered else 1.2))
-            painter.setBrush(QColor(196, 239, 112, 76 if selected else
-                                    48 if hovered else 27))
+            painter.setBrush(QColor(255, 255, 255, 205 if selected else
+                                    185 if hovered else 150))
             painter.drawRoundedRect(QRectF(cap.x, cap.y, cap.w, cap.h), 5, 5)
-            painter.setPen(QColor("#FFFFFF"))
+            painter.setPen(QColor("#111111"))
             painter.drawText(QRectF(cap.x + 2, cap.y + 1, cap.w - 4, cap.h - 2),
                              Qt.AlignmentFlag.AlignCenter, cap.label)
             if selected:
                 painter.fillRect(QRectF(cap.x + cap.w - 9, cap.y + cap.h - 9, 9, 9),
-                                 QColor("#D8FB9A"))
-        painter.setPen(QPen(QColor("#455645"), 1))
+                                 QColor("#111111"))
+        painter.setPen(QPen(QColor("#DEDEDE"), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(frame, 16, 16)
         painter.end()

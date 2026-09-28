@@ -4,7 +4,7 @@
 
 ## 启动和退出
 
-普通用户下载 Releases 中的 `LaoBiDeng-Setup-1.4.0.exe`，双击安装后从桌面或开始菜单启动，无需单独安装 Python。首次启动会扫描已连接的 HID 键盘，自动读取 VID/PID 和设备报告的型号；识别到已适配的 V98 Pro 可直接使用。系统只报告通用名称或连接了多把键盘时，可在设备设置里选择和修正。
+普通用户下载 Releases 中的 `LaoBiDeng-Setup-1.5.0.exe`，双击安装后从桌面或开始菜单启动，无需单独安装 Python。首次启动会扫描已连接的 HID 键盘，自动读取 VID/PID 和设备报告的型号；识别到已适配的 V98 Pro 可直接使用。系统只报告通用名称或连接了多把键盘时，可在设备设置里选择和修正。
 
 目前安装包尚未签名，开启 Windows Smart App Control 的电脑可能阻止安装或启动。正式解决需要可信的代码签名证书；请不要为此关闭系统防护。源码和安装包均在本项目的 GitHub Releases 发布。
 
@@ -18,7 +18,7 @@
 
 ## 灯效与颜色
 
-v1.4.0 将主窗口重构为左侧导航与五个独立工作区：灯效画廊、颜色搭配、灯效参数、我的预设、设备与设置。设置、色盘、键位绘制窗口、滑块、灯效卡片与安装器共用深灰和青柠视觉系统；按钮、输入、颜色选择与开关有一致的悬停、按下、选中、焦点及禁用反馈。程序图标与托盘图标同步更新。按提供的 HarmonyOS Sans 字体选用 Regular、Medium、Bold；安装包收录 OpenHarmony 发布的原版简体中文字库和英文字库，依据 [HarmonyOS Sans 字体许可](assets/fonts/LICENSE-HarmonyOS-Sans.txt) 分发。原有灯效、配色和个人设置会保留。
+v1.5.0 按用户演示的浅色软件界面重新设计视觉系统：浅灰主画布、近白侧栏、白色内容面板、黑色主操作与低对比度次级控件。灯效画廊、颜色搭配、灯效参数、我的预设、设备与设置继续作为五个工作区；键位预览保留深色底来呈现实际灯色。字体强制使用 HarmonyOS Sans SC 的 Regular、Medium、Bold，启动日志记录实际加载和解析的字族，设置页也显示当前字体。安装包收录 OpenHarmony 发布的原版字体文件，依据 [HarmonyOS Sans 字体许可](assets/fonts/LICENSE-HarmonyOS-Sans.txt) 分发。原有灯效、配色和个人设置会保留。
 
 灯效画廊分为常规 21 种、按键互动 21 种、音乐交互 21 种和自定义灯效 3 种。四个分类按钮可分别展开或收起，同一时间最多展开一个分类。自定义灯效包括“自绘心跳”“逐键画布”和“自绘星图”。暗色涟漪默认以黑色波纹色在常亮底色上扩散；连续按键产生的涟漪可以同时走完。新增的数字雨、按键回声、扫描光束和音乐可视化玩法参考了 [QMK RGB Matrix](https://github.com/qmk/qmk_firmware/blob/master/docs/features/rgb_matrix.md) 与 [OpenRGB Effects Plugin](https://openrgb.org/plugin_effects.html) 的效果类别，动画计算由本项目按键位坐标独立实现。
 
@@ -54,7 +54,7 @@ Fn 可作为独立灯位在自定义画布中点亮。Fn 是键盘固件功能�
 
 ## 开发与打包
 
-安装 `requirements-build.txt` 后，运行 `build_release.ps1`。脚本使用 PyInstaller 打包独立程序，再用 Inno Setup 6.7 编译深灰和青柠主题的 Windows 安装包，输出位于 `release/`。构建机器需安装 Inno Setup 6；最终用户无需这些工具。
+安装 `requirements-build.txt` 后，运行 `build_release.ps1`。脚本使用 PyInstaller 打包独立程序，再用 Inno Setup 6.7 编译同款浅色 Windows 安装包，输出位于 `release/`。构建机器需安装 Inno Setup 6；最终用户无需这些工具。
 
 ## 项目文件
 
