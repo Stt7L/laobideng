@@ -176,6 +176,17 @@ QPushButton#palettePair:hover { background: #304034; border-color: #849974; }
 QPushButton#palettePair:pressed { background: #202B24; }
 QPushButton#palettePair:checked { background: #34472E; border-color: #C4EF70; color: #ECF8D8; }
 QPushButton#palettePair:focus { border-color: #E0FFA4; }
+QPushButton#inspirationToggle {
+    background: transparent;
+    color: #EAF4DE;
+    border: none;
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-weight: 700;
+    text-align: left;
+}
+QPushButton#inspirationToggle:hover { background: #303D31; }
+QPushButton#inspirationToggle:focus { border: 1px solid #C4EF70; }
 QPushButton#pairingMood {
     color: #C4D0BF;
     background: #263027;
@@ -191,6 +202,23 @@ QPushButton#pairingMood:checked {
     background: #34472E;
     border-color: #C4EF70;
 }
+QPushButton#startupToggle {
+    background: #293329;
+    color: #E1EBDD;
+    border: 1px solid #536251;
+    border-radius: 12px;
+    padding: 10px 15px;
+    text-align: left;
+    min-height: 26px;
+    font-weight: 600;
+}
+QPushButton#startupToggle:hover { background: #354337; }
+QPushButton#startupToggle:checked {
+    background: #35472F;
+    color: #E8F8CF;
+    border-color: #C4EF70;
+}
+QPushButton#startupToggle:disabled { color: #7F8C7F; }
 QLabel#pickerValue { color: #F1F8E9; font-size: 16px; font-weight: 700; }
 QSpinBox#colorChannel {
     color: #EFF3E9;

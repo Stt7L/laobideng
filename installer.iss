@@ -1,4 +1,4 @@
-#define AppVersion "1.3.5"
+#define AppVersion "1.3.6"
 #define AppName "老必灯"
 
 [Setup]
@@ -41,6 +41,9 @@ Source: "dist\老必灯\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdir
 
 [InstallDelete]
 Type: files; Name: "{app}\_internal\icuuc.dll"
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "LaoBiDeng"; Flags: uninsdeletevalue
 
 [Icons]
 Name: "{autoprograms}\老必灯"; Filename: "{app}\老必灯.exe"; WorkingDir: "{app}"

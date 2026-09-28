@@ -462,10 +462,11 @@ def render(effect, now, base, accent, brightness, speed, events,
             glow = max(0.0, (spark - 0.68) / 0.32) * (0.12 + treble * 0.88)
             color = mix(scale(base_lit, 0.2), accent_lit, glow)
         elif effect == "audio_sweep":
-            head = 440 + 390 * math.sin(t * (0.7 + audio_level * 1.2))
+            travel = (t * 0.34) % 2
+            head = 50 + 780 * (1 - abs(travel - 1))
             glow = math.exp(-((x - head) / (38 * width)) ** 2)
             color = mix(scale(base_lit, 0.2), accent_lit,
-                        glow * min(1.0, 0.25 + audio_level * 0.45 + beat_energy * 0.4))
+                        glow * min(1.0, 0.16 + audio_level * 0.38 + beat_energy * 0.46))
         elif effect == "audio_rain":
             column = round(x / 39)
             band = (bass, middle, treble)[min(2, int(x / 300))]

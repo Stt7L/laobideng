@@ -8,6 +8,7 @@ import re
 import shutil
 import sys
 import time
+import winreg
 import zipfile
 from pathlib import Path
 
@@ -37,8 +38,10 @@ ICON = ROOT / "assets" / "ripple.ico"
 SERVER_NAME = "vgn-ripple-v98pro-320f-5055"
 PROJECT_URL = "https://github.com/Stt7L/laobideng"
 LOG = logging.getLogger("vgn-ripple")
+STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_VALUE = "LaoBiDeng"
 
-PAIRING_MOODS = ("清新", "暖调", "霓虹", "柔和")
+PAIRING_MOODS = ("清新", "暖调", "霓虹", "柔和", "撞色", "复古", "自然")
 COLOR_PAIRINGS = (
     ("清新", "青柠珊瑚", (196, 239, 112), (255, 130, 112)),
     ("清新", "海盐晚霞", (96, 201, 211), (245, 151, 142)),
@@ -64,6 +67,30 @@ COLOR_PAIRINGS = (
     ("柔和", "雾松蜜桃", (137, 191, 165), (245, 178, 150)),
     ("柔和", "晨雾玫瑰", (202, 215, 226), (233, 148, 174)),
     ("柔和", "甜橙牛奶", (250, 189, 127), (244, 220, 190)),
+    ("撞色", "海水番茄", (78, 219, 219), (255, 97, 87)),
+    ("撞色", "金橘蓝调", (252, 181, 75), (91, 119, 236)),
+    ("撞色", "青柠葡萄", (214, 248, 86), (177, 83, 222)),
+    ("撞色", "莓粉薄荷", (241, 115, 202), (95, 219, 176)),
+    ("撞色", "晴空柠檬", (108, 154, 245), (255, 214, 105)),
+    ("撞色", "珊瑚冰河", (255, 121, 101), (85, 218, 222)),
+    ("撞色", "紫藤麦芽", (168, 96, 240), (255, 200, 93)),
+    ("撞色", "孔雀玫瑰", (72, 200, 151), (244, 109, 167)),
+    ("复古", "老电影", (179, 155, 112), (209, 123, 112)),
+    ("复古", "铜绿夕照", (91, 170, 151), (240, 169, 94)),
+    ("复古", "唱片封套", (188, 123, 170), (235, 194, 126)),
+    ("复古", "咖啡蓝釉", (207, 155, 113), (104, 170, 200)),
+    ("复古", "胶片海风", (105, 167, 177), (232, 145, 117)),
+    ("复古", "旧梦玫瑰", (208, 142, 157), (163, 182, 123)),
+    ("复古", "麦田暮紫", (218, 180, 103), (151, 126, 189)),
+    ("复古", "汽水瓶盖", (122, 183, 159), (232, 168, 147)),
+    ("自然", "山谷清晨", (124, 188, 145), (248, 207, 124)),
+    ("自然", "浅海贝壳", (100, 192, 207), (239, 183, 160)),
+    ("自然", "花园露水", (163, 209, 130), (175, 152, 218)),
+    ("自然", "湖畔霞光", (115, 184, 217), (255, 174, 123)),
+    ("自然", "雨后栀子", (222, 226, 174), (133, 196, 175)),
+    ("自然", "初雪红梅", (205, 224, 237), (225, 104, 136)),
+    ("自然", "火山海盐", (235, 127, 106), (112, 197, 193)),
+    ("自然", "森林星夜", (106, 181, 141), (139, 170, 230)),
 )
 
 
@@ -89,6 +116,41 @@ def color_hex(value):
     return "#%02X%02X%02X" % value
 
 
+def startup_command():
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable)
+    else:
+        executable = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "老必灯" / "老必灯.exe"
+    return f'"{executable}" --autostart' if executable.is_file() else None
+
+
+def startup_enabled():
+    command = startup_command()
+    if not command:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_KEY) as key:
+            saved, _ = winreg.QueryValueEx(key, STARTUP_VALUE)
+        return saved.casefold() == command.casefold()
+    except (OSError, AttributeError):
+        return False
+
+
+def set_startup_enabled(enabled):
+    command = startup_command()
+    if enabled and not command:
+        raise OSError("请先安装老必灯，再开启开机自启")
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, STARTUP_KEY, 0,
+                            winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, STARTUP_VALUE, 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(key, STARTUP_VALUE)
+            except FileNotFoundError:
+                pass
+
+
 def swatch_icon(rgb):
     pixmap = QPixmap(28, 28)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -96,7 +158,7 @@ def swatch_icon(rgb):
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(QPen(QColor("#8D9988"), 1))
     painter.setBrush(QColor(*rgb))
-    painter.drawRoundedRect(2, 2, 24, 24, 7, 7)
+    painter.drawEllipse(2, 2, 24, 24)
     painter.end()
     return QIcon(pixmap)
 
@@ -108,9 +170,9 @@ def pair_swatch_icon(base, accent):
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(QPen(QColor("#172019"), 1))
     painter.setBrush(QColor(*base))
-    painter.drawRoundedRect(QRectF(1, 2, 29, 24), 7, 7)
+    painter.drawEllipse(QRectF(1, 2, 24, 24))
     painter.setBrush(QColor(*accent))
-    painter.drawRoundedRect(QRectF(18, 2, 29, 24), 7, 7)
+    painter.drawEllipse(QRectF(22, 2, 24, 24))
     painter.end()
     return QIcon(pixmap)
 
@@ -132,46 +194,112 @@ def chevron_icon(up=False):
     return QIcon(pixmap)
 
 
-class FineSlider(QSlider):
-    """Pill-shaped slider with direct, fine-grained pointer adjustment."""
+class NoWheelSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
 
-    THUMB_HALF_WIDTH = 13
+
+class FineSlider(QSlider):
+    """Inset circular slider with subtle motion and optional magnetic stops."""
+
+    EDGE = 19
 
     def __init__(self, parent=None):
         super().__init__(Qt.Orientation.Horizontal, parent)
-        self.setFixedHeight(30)
+        self.setFixedHeight(42)
         self.setSingleStep(1)
         self.setPageStep(10)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True)
         self._hovered = False
-        self.valueChanged.connect(self.update)
+        self._visual_fraction = 0.0
+        self._snap_values = []
+        self._active_snap = None
+        self._motion_timer = QTimer(self)
+        self._motion_timer.setInterval(16)
+        self._motion_timer.timeout.connect(self._advance_visual)
+        self.valueChanged.connect(self._animate_to_value)
+
+    def setSnapValues(self, values):
+        self._snap_values = sorted({max(self.minimum(), min(self.maximum(),
+                                            int(value))) for value in values})
+        self.update()
+
+    def _fraction(self):
+        return (self.value() - self.minimum()) / max(1, self.maximum() - self.minimum())
+
+    def _position(self, fraction):
+        return self.EDGE + fraction * max(1, self.width() - self.EDGE * 2)
+
+    def _animate_to_value(self, _value):
+        self._motion_timer.start()
+        self.update()
+
+    def _advance_visual(self):
+        target = self._fraction()
+        self._visual_fraction += (target - self._visual_fraction) * (0.34 if self.isSliderDown() else 0.48)
+        if abs(target - self._visual_fraction) < 0.0005:
+            self._visual_fraction = target
+            self._motion_timer.stop()
+        self.update()
+
+    def showEvent(self, event):
+        self._visual_fraction = self._fraction()
+        super().showEvent(event)
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         center_y = self.height() / 2
-        left = self.THUMB_HALF_WIDTH + 1
-        track_width = max(1, self.width() - 2 * left)
-        span = max(1, self.maximum() - self.minimum())
-        x = left + track_width * (self.value() - self.minimum()) / span
-
+        x = self._position(self._visual_fraction)
+        track = QRectF(2, center_y - 15, max(1, self.width() - 4), 30)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#414D40"))
-        painter.drawRoundedRect(QRectF(1, center_y - 3, self.width() - 2, 6), 3, 3)
-        painter.setBrush(QColor("#C4EF70"))
-        painter.drawRoundedRect(QRectF(1, center_y - 3, max(0, x - 1), 6), 3, 3)
-
-        painter.setPen(QPen(QColor("#C4EF70"), 2 if self.hasFocus() else 1.5))
-        painter.setBrush(QColor("#FCFFF5" if self.isSliderDown() else
-                                "#EFF8D9" if self._hovered else "#F4F9EA"))
-        painter.drawRoundedRect(QRectF(x - left, center_y - 8, 2 * left, 16), 8, 8)
+        painter.setBrush(QColor("#3B453D"))
+        painter.drawRoundedRect(track, 15, 15)
+        fill = QRectF(4, center_y - 13, max(0, x - 4), 26)
+        painter.setBrush(QColor("#536B48" if self.isSliderDown() else "#4A6044"))
+        painter.drawRoundedRect(fill, 13, 13)
+        show_marks = self._hovered or self.isSliderDown() or self.hasFocus()
+        if show_marks:
+            for mark in self._snap_values:
+                fraction = (mark - self.minimum()) / max(1, self.maximum() - self.minimum())
+                dot_x = self._position(fraction)
+                active = mark == self._active_snap and self.isSliderDown()
+                painter.setBrush(QColor("#DFFF9C" if active else "#9BA69A"))
+                diameter = 5 if active else 3.5
+                painter.drawEllipse(QPointF(dot_x, center_y), diameter, diameter)
+        if self.isSliderDown() or self._hovered:
+            painter.setBrush(QColor(196, 239, 112, 43 if self.isSliderDown() else 23))
+            painter.drawEllipse(QPointF(x, center_y), 17, 17)
+        thumb_radius = 11 if self.isSliderDown() else 12
+        painter.setBrush(QColor(9, 15, 10, 70))
+        painter.drawEllipse(QPointF(x, center_y + 2), thumb_radius + 1, thumb_radius + 1)
+        painter.setPen(QPen(QColor("#F4FFE4" if self.isSliderDown() else "#F8FBF4"), 1))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawEllipse(QPointF(x, center_y), thumb_radius, thumb_radius)
+        if self.isSliderDown():
+            painter.setPen(QPen(QColor("#D9FBA2"), 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(x, center_y), thumb_radius + 3, thumb_radius + 3)
+        painter.end()
 
     def _set_from_pointer(self, x):
-        left = self.THUMB_HALF_WIDTH + 1
-        width = max(1, self.width() - 2 * left)
-        fraction = min(1.0, max(0.0, (x - left) / width))
-        self.setValue(round(self.minimum() + fraction * (self.maximum() - self.minimum())))
+        width = max(1, self.width() - self.EDGE * 2)
+        fraction = min(1.0, max(0.0, (x - self.EDGE) / width))
+        raw = self.minimum() + fraction * (self.maximum() - self.minimum())
+        self._active_snap = None
+        if self._snap_values:
+            nearest = min(self._snap_values, key=lambda mark: abs(mark - raw))
+            distance = abs(self._position((nearest - self.minimum()) /
+                                          max(1, self.maximum() - self.minimum())) - x)
+            if distance <= 8:
+                raw = nearest
+                self._active_snap = nearest
+        self.setValue(round(raw))
+        self.update()
+
+    def wheelEvent(self, event):
+        event.ignore()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -193,6 +321,8 @@ class FineSlider(QSlider):
         if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
             self._set_from_pointer(event.position().x())
             self.setSliderDown(False)
+            self._active_snap = None
+            self._motion_timer.start()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
@@ -553,6 +683,9 @@ class MainWindow(QMainWindow):
         self.editing_color = None
         self.editing_original = None
         self.settings = read_settings()
+        saved_mood = self.settings.get("pairing_mood")
+        self.pairing_mood = saved_mood if saved_mood in PAIRING_MOODS else PAIRING_MOODS[0]
+        self.inspiration_expanded = bool(self.settings.get("pairings_expanded", False))
         self.profile = self.settings.get("device_profile")
         if not isinstance(self.profile, dict) or not all(
                 self.profile.get(field) for field in ("model", "vid", "pid")):
@@ -860,31 +993,57 @@ class MainWindow(QMainWindow):
         tiles.setSpacing(12)
         self.base_button = QPushButton()
         self.accent_button = QPushButton()
+        self.ecg_background_button = QPushButton()
         for button, target in ((self.base_button, "base"),
-                               (self.accent_button, "accent")):
+                               (self.accent_button, "accent"),
+                               (self.ecg_background_button, "ecg_background")):
             button.setObjectName("colorTile")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setIconSize(QSize(28, 28))
-            button.setAccessibleName("选择当前灯效的底色" if target == "base"
-                                     else "选择当前灯效的点缀色")
+            button.setAccessibleName(
+                "选择心电背景色" if target == "ecg_background" else
+                "选择当前灯效的底色" if target == "base" else
+                "选择当前灯效的点缀色")
             button.clicked.connect(lambda _checked=False, which=target:
                                    self._open_color_editor(which))
             tiles.addWidget(button, 1)
         colors_layout.addLayout(tiles)
+        global_row = QHBoxLayout()
+        global_row.setSpacing(12)
+        self.global_button = QPushButton()
+        self.global_button.setObjectName("colorTile")
+        self.global_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.global_button.setIconSize(QSize(28, 28))
+        self.global_button.setAccessibleName("选择全局颜色")
+        self.global_button.clicked.connect(
+            lambda: self._open_color_editor("global_color"))
+        global_row.addWidget(self.global_button, 1)
+        self.global_apply_button = QPushButton("同步全部底色与点缀色")
+        self.global_apply_button.setObjectName("secondary")
+        self.global_apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.global_apply_button.setToolTip("把全局颜色同时同步为全部灯效的底色和点缀色")
+        self.global_apply_button.clicked.connect(self._sync_global_color)
+        global_row.addWidget(self.global_apply_button)
+        colors_layout.addLayout(global_row)
         inspiration_header = QHBoxLayout()
-        inspiration_title = QLabel("配色灵感")
-        inspiration_title.setObjectName("sectionTitle")
-        inspiration_header.addWidget(inspiration_title)
+        self.inspiration_toggle = QPushButton()
+        self.inspiration_toggle.setObjectName("inspirationToggle")
+        self.inspiration_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.inspiration_toggle.clicked.connect(self._toggle_inspiration)
+        inspiration_header.addWidget(self.inspiration_toggle)
         inspiration_header.addStretch()
         self.inspiration_note = QLabel("点一下，直接套用")
         self.inspiration_note.setObjectName("muted")
         inspiration_header.addWidget(self.inspiration_note)
         colors_layout.addLayout(inspiration_header)
+        self.inspiration_panel = QWidget()
+        inspiration_layout = QVBoxLayout(self.inspiration_panel)
+        inspiration_layout.setContentsMargins(0, 0, 0, 0)
+        inspiration_layout.setSpacing(8)
         mood_row = QHBoxLayout()
         mood_row.setSpacing(8)
         self.pairing_mood_buttons = {}
         self.pairing_panels = {}
-        self.pairing_mood = PAIRING_MOODS[0]
         for mood in PAIRING_MOODS:
             mood_button = QPushButton(mood)
             mood_button.setObjectName("pairingMood")
@@ -894,7 +1053,7 @@ class MainWindow(QMainWindow):
                                         self._show_pairing_mood(chosen))
             mood_row.addWidget(mood_button, 1)
             self.pairing_mood_buttons[mood] = mood_button
-        colors_layout.addLayout(mood_row)
+        inspiration_layout.addLayout(mood_row)
         self.pairing_buttons = []
         for mood in PAIRING_MOODS:
             panel = QWidget()
@@ -918,34 +1077,11 @@ class MainWindow(QMainWindow):
                 pairing_grid.addWidget(button, position // 3, position % 3)
                 self.pairing_buttons.append((index, button))
                 position += 1
-            colors_layout.addWidget(panel)
+            inspiration_layout.addWidget(panel)
             self.pairing_panels[mood] = panel
         self._show_pairing_mood(self.pairing_mood)
-        global_row = QHBoxLayout()
-        global_row.setSpacing(12)
-        self.global_button = QPushButton()
-        self.global_button.setObjectName("colorTile")
-        self.global_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.global_button.setIconSize(QSize(28, 28))
-        self.global_button.setAccessibleName("选择全局颜色")
-        self.global_button.clicked.connect(
-            lambda: self._open_color_editor("global_color"))
-        global_row.addWidget(self.global_button, 1)
-        self.global_apply_button = QPushButton("同步为全部灯效底色")
-        self.global_apply_button.setObjectName("secondary")
-        self.global_apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.global_apply_button.setToolTip("将全局颜色同步给全部灯效，点缀色保留原设置")
-        self.global_apply_button.clicked.connect(self._sync_global_color)
-        global_row.addWidget(self.global_apply_button)
-        colors_layout.addLayout(global_row)
-        self.ecg_background_button = QPushButton()
-        self.ecg_background_button.setObjectName("colorTile")
-        self.ecg_background_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ecg_background_button.setIconSize(QSize(28, 28))
-        self.ecg_background_button.setAccessibleName("选择心电波背景色")
-        self.ecg_background_button.clicked.connect(
-            lambda: self._open_color_editor("ecg_background"))
-        colors_layout.addWidget(self.ecg_background_button)
+        colors_layout.addWidget(self.inspiration_panel)
+        self._set_inspiration_expanded(self.inspiration_expanded)
         self._update_color_buttons()
 
         self.color_editor = QFrame()
@@ -1058,7 +1194,7 @@ class MainWindow(QMainWindow):
         brightness_hint = QLabel("整体亮度控制全部灯光；底色和点缀色亮度可单独微调")
         brightness_hint.setObjectName("hint")
         settings_layout.insertWidget(1, brightness_hint)
-        settings_hint = QLabel("拖动滑块，或点击右侧数值输入后按回车")
+        settings_hint = QLabel("拖动可细调；靠近圆点时轻轻吸附。也可在右侧直接输入数值")
         settings_hint.setObjectName("hint")
         settings_layout.addWidget(settings_hint)
         layout.addWidget(settings_card)
@@ -1256,6 +1392,21 @@ class MainWindow(QMainWindow):
         device_layout.addWidget(edit_device)
         settings_page.addWidget(device_card)
         settings_page.addWidget(connection_card)
+        startup_card, startup_layout = self._card("启动与后台")
+        startup_note = QLabel("登录 Windows 后自动运行，灯效在托盘中持续工作。")
+        startup_note.setObjectName("muted")
+        startup_layout.addWidget(startup_note)
+        self.startup_button = QPushButton("开机自启")
+        self.startup_button.setObjectName("startupToggle")
+        self.startup_button.setCheckable(True)
+        self.startup_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.startup_button.clicked.connect(self._startup_toggled)
+        startup_layout.addWidget(self.startup_button)
+        self.startup_status = QLabel()
+        self.startup_status.setObjectName("hint")
+        startup_layout.addWidget(self.startup_status)
+        settings_page.addWidget(startup_card)
+        self._refresh_startup_control()
         author_card, author_layout = self._card("关于老必灯")
         author = QLabel("作者  Stt7L")
         author.setObjectName("muted")
@@ -1280,6 +1431,28 @@ class MainWindow(QMainWindow):
         content.addWidget(heading)
         return card, content
 
+    def _refresh_startup_control(self):
+        available = startup_command() is not None
+        enabled = startup_enabled()
+        self.startup_button.setEnabled(available)
+        self.startup_button.setChecked(enabled)
+        self.startup_button.setText("✓  已开启开机自启" if enabled else "开启开机自启")
+        self.startup_status.setText(
+            "下次登录后自动在托盘运行" if enabled else
+            "安装老必灯后可使用" if not available else
+            "当前不会随 Windows 登录自动启动")
+
+    def _startup_toggled(self, enabled):
+        try:
+            set_startup_enabled(enabled)
+        except OSError as error:
+            LOG.warning("Could not change startup preference: %s", error)
+            self.startup_status.setText(f"设置失败：{error}")
+            self.startup_button.setChecked(not enabled)
+            return
+        self._refresh_startup_control()
+        LOG.info("Start with Windows: %s", enabled)
+
     def _slider_row(self, parent, label, low, high, value, unit):
         container = QWidget()
         row = QHBoxLayout(container)
@@ -1292,10 +1465,14 @@ class MainWindow(QMainWindow):
         row.addWidget(name)
         slider = FineSlider()
         slider.setRange(low, high)
+        slider.setSnapValues(
+            [200, 500, 1000, 1500, 2000, 2500, 3000]
+            if unit == "×" else
+            range(low, high + 1, 250 if low == 500 else 100))
         slider.setValue(value)
         slider.setAccessibleName(label)
         row.addWidget(slider, 1)
-        display = QDoubleSpinBox()
+        display = NoWheelSpinBox()
         display.setObjectName("settingValue")
         display.setRange(low / (10 if unit == "%" else 1000),
                          high / (10 if unit == "%" else 1000))
@@ -1640,15 +1817,15 @@ class MainWindow(QMainWindow):
             self._cancel_color_editor()
         self._detach_active_preset()
         for effect_id in EFFECT_IDS:
-            _, accent = self.effect_palettes.get(
-                effect_id, self._default_palette(effect_id))
-            self.effect_palettes[effect_id] = (self.engine.global_color, accent)
+            self.effect_palettes[effect_id] = (
+                self.engine.global_color, self.engine.global_color)
         self.engine.base = self.engine.global_color
+        self.engine.accent = self.engine.global_color
         self._update_color_buttons()
         self._update_palette_hint()
         self.engine.last_frame = self.engine.frame(time.perf_counter())
         self.preview.update()
-        self.preset_status.setText("全局颜色已同步到全部灯效的底色")
+        self.preset_status.setText("全局颜色已同步到全部灯效的底色和点缀色")
         self._save_settings()
 
     def _refresh_gallery(self):
@@ -1978,6 +2155,21 @@ class MainWindow(QMainWindow):
         for name, button in self.pairing_mood_buttons.items():
             button.setChecked(name == mood)
             self.pairing_panels[name].setVisible(name == mood)
+        if hasattr(self, "frame_timer"):
+            self._save_settings()
+
+    def _set_inspiration_expanded(self, expanded):
+        self.inspiration_expanded = bool(expanded)
+        self.inspiration_panel.setVisible(self.inspiration_expanded)
+        self.inspiration_note.setVisible(self.inspiration_expanded)
+        self.inspiration_toggle.setIcon(chevron_icon(up=self.inspiration_expanded))
+        self.inspiration_toggle.setText(f"配色灵感 · {len(COLOR_PAIRINGS)} 组")
+        self.inspiration_toggle.setAccessibleName(
+            "收起配色灵感" if self.inspiration_expanded else "展开配色灵感")
+
+    def _toggle_inspiration(self):
+        self._set_inspiration_expanded(not self.inspiration_expanded)
+        self._save_settings()
 
     def _apply_color_pairing(self, index):
         _, name, base, accent = COLOR_PAIRINGS[index]
@@ -2032,7 +2224,7 @@ class MainWindow(QMainWindow):
             self.color_preview_label.setText(color.name().upper())
             self.color_preview_chip.setStyleSheet(
                 f"background: {color.name()}; border: 1px solid #869284;"
-                "border-radius: 11px;")
+                "border-radius: 25px;")
         finally:
             self._picker_sync = False
         self.color_error.clear()
@@ -2118,6 +2310,8 @@ class MainWindow(QMainWindow):
                                 "accent": color_hex(palette[1])}
                     for effect_id, palette in self.effect_palettes.items()},
                 "gallery_category": self.gallery_category,
+                "pairing_mood": self.pairing_mood,
+                "pairings_expanded": self.inspiration_expanded,
                 "custom_heart_keys": sorted(self.engine.custom_heart_keys),
                 "custom_canvas_keys": sorted(self.engine.custom_canvas_keys),
                 "brightness": self.engine.brightness,
@@ -2180,6 +2374,7 @@ def run(preview=False):
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setStyleSheet((ROOT / "ui.qss").read_text(encoding="utf-8"))
     app.setQuitOnLastWindowClosed(False)
+    autostart = "--autostart" in sys.argv and not preview
 
     mutex = None
     if not preview:
@@ -2199,11 +2394,15 @@ def run(preview=False):
             raise ctypes.WinError(ctypes.get_last_error())
         already_running = ctypes.get_last_error() == 183
         if already_running:
-            show_existing_instance()
+            if not autostart:
+                show_existing_instance()
             kernel32.CloseHandle(mutex)
             return 0
     window = MainWindow(preview=preview)
-    window.show()
+    if not autostart or window.tray is None:
+        window.show()
+    else:
+        LOG.info("Started with Windows; window kept in system tray")
     result = app.exec()
     if not window.exiting:
         window.engine.close()
