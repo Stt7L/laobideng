@@ -375,10 +375,11 @@ class LightingController:
             self.last_frame = self.frame(time.perf_counter())
             if transport == "wireless":
                 self.worker_error = None
-                self.worker_stop.clear()
+                self.worker_stop = threading.Event()
                 self.worker_displayed_frame = None
                 self.worker_pending_events.clear()
                 self.worker = threading.Thread(target=self._wireless_loop,
+                                               args=(self.worker_stop, handle),
                                                name="V98Pro-2.4G", daemon=True)
                 self.worker.start()
             self.write_frame(self.last_frame)
@@ -457,12 +458,13 @@ class LightingController:
         level = max(0.0, min(1.0, self.brightness * self.base_brightness))
         return tuple(round(channel * level) for channel in self.base)
 
-    def _write_report(self, packet):
-        if self.handle is None:
+    def _write_report(self, packet, handle=None):
+        target = self.handle if handle is None else handle
+        if target is None:
             return
         sent = wintypes.DWORD()
         buffer = ctypes.create_string_buffer(packet, len(packet))
-        if not kernel32.WriteFile(self.handle, buffer, len(packet),
+        if not kernel32.WriteFile(target, buffer, len(packet),
                                   ctypes.byref(sent), None) or sent.value != len(packet):
             raise ctypes.WinError(ctypes.get_last_error())
 
@@ -482,16 +484,16 @@ class LightingController:
                 return self.worker_displayed_frame or self.last_frame
         return self.last_frame
 
-    def _wireless_loop(self):
+    def _wireless_loop(self, stop, handle):
         wireless_ripples = []
-        while not self.worker_stop.is_set():
+        while not stop.is_set():
             with self.worker_lock:
                 frame = self.worker_frame
                 self.worker_frame = None
                 pending = self.worker_pending_events
                 self.worker_pending_events = []
             if frame is None and not pending:
-                self.worker_stop.wait(0.01)
+                stop.wait(0.01)
                 continue
             try:
                 if self.ripples_enabled and self.effect in REACTIVE:
@@ -516,17 +518,19 @@ class LightingController:
                 # Dynamic partial commits are not stable on this receiver;
                 # send all 16 reports for every committed lighting frame.
                 for packet in packets:
-                    if self.worker_stop.is_set():
+                    if stop.is_set():
                         return
-                    self._write_report(packet)
+                    self._write_report(packet, handle)
                     # Event.wait() rounds short timeouts to roughly 15.6 ms
                     # on this Windows host. sleep() uses the high resolution
                     # timer; the pause also lets the receiver accept reports.
                     time.sleep(WIRELESS_PACKET_DELAY)
                 with self.worker_lock:
-                    self.worker_displayed_frame = frame
+                    if self.worker_stop is stop:
+                        self.worker_displayed_frame = frame
             except OSError as error:
-                self.worker_error = error
+                if self.worker_stop is stop:
+                    self.worker_error = error
                 return
 
     def tick(self, now=None):

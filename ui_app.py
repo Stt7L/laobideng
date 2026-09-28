@@ -12,12 +12,12 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QColorDialog, QDoubleSpinBox, QFrame,
+    QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
     QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QStackedWidget,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
@@ -37,6 +37,17 @@ ICON = ROOT / "assets" / "ripple.ico"
 SERVER_NAME = "vgn-ripple-v98pro-320f-5055"
 PROJECT_URL = "https://github.com/Stt7L/laobideng"
 LOG = logging.getLogger("vgn-ripple")
+
+COLOR_PAIRINGS = (
+    ("青柠石墨", (196, 239, 112), (42, 61, 50)),
+    ("海盐晚霞", (96, 201, 211), (245, 151, 142)),
+    ("月光暗涟", (187, 214, 245), (20, 36, 54)),
+    ("极夜琥珀", (57, 112, 174), (255, 184, 96)),
+    ("薄荷樱云", (141, 224, 193), (244, 159, 191)),
+    ("蜜桃海岸", (255, 172, 143), (110, 195, 228)),
+    ("紫雾电光", (171, 149, 232), (111, 219, 225)),
+    ("暖白青影", (229, 234, 220), (64, 164, 148)),
+)
 
 
 def read_settings():
@@ -69,6 +80,20 @@ def swatch_icon(rgb):
     painter.setPen(QPen(QColor("#8D9988"), 1))
     painter.setBrush(QColor(*rgb))
     painter.drawRoundedRect(2, 2, 24, 24, 7, 7)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def pair_swatch_icon(base, accent):
+    pixmap = QPixmap(48, 28)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QPen(QColor("#172019"), 1))
+    painter.setBrush(QColor(*base))
+    painter.drawRoundedRect(QRectF(1, 2, 29, 24), 7, 7)
+    painter.setBrush(QColor(*accent))
+    painter.drawRoundedRect(QRectF(18, 2, 29, 24), 7, 7)
     painter.end()
     return QIcon(pixmap)
 
@@ -172,6 +197,166 @@ class FineSlider(QSlider):
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
         self.update()
+
+
+class ColorField(QWidget):
+    """A direct saturation/value surface with keyboard and pointer control."""
+
+    colorChanged = Signal(QColor)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.hue = 150
+        self.saturation = 180
+        self.value = 255
+        self.setMinimumHeight(190)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("颜色区域：左右调整鲜艳度，上下调整明暗")
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def setColor(self, color):
+        if color.hue() >= 0:
+            self.hue = color.hue()
+        self.saturation = color.saturation()
+        self.value = color.value()
+        self.update()
+
+    def setHue(self, hue):
+        self.hue = max(0, min(359, int(hue)))
+        self.update()
+        self.colorChanged.emit(QColor.fromHsv(self.hue, self.saturation, self.value))
+
+    def _pick(self, point):
+        width = max(1, self.width() - 1)
+        height = max(1, self.height() - 1)
+        self.saturation = round(max(0.0, min(1.0, point.x() / width)) * 255)
+        self.value = round((1 - max(0.0, min(1.0, point.y() / height))) * 255)
+        self.update()
+        self.colorChanged.emit(QColor.fromHsv(self.hue, self.saturation, self.value))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
+            self._pick(event.position())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._pick(event.position())
+            event.accept()
+
+    def keyPressEvent(self, event):
+        move = {
+            Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+            Qt.Key.Key_Up: (0, 1), Qt.Key.Key_Down: (0, -1),
+        }.get(event.key())
+        if move is None:
+            super().keyPressEvent(event)
+            return
+        step = 10 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 2
+        self.saturation = max(0, min(255, self.saturation + move[0] * step))
+        self.value = max(0, min(255, self.value + move[1] * step))
+        self.update()
+        self.colorChanged.emit(QColor.fromHsv(self.hue, self.saturation, self.value))
+        event.accept()
+
+    def paintEvent(self, _event):
+        area = QRectF(0, 0, self.width(), self.height())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(area.adjusted(1, 1, -1, -1), 12, 12)
+        painter.setClipPath(path)
+        painter.fillRect(area, QColor.fromHsv(self.hue, 255, 255))
+        white = QLinearGradient(0, 0, self.width(), 0)
+        white.setColorAt(0, QColor(255, 255, 255))
+        white.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.fillRect(area, QBrush(white))
+        shade = QLinearGradient(0, 0, 0, self.height())
+        shade.setColorAt(0, QColor(0, 0, 0, 0))
+        shade.setColorAt(1, QColor(0, 0, 0))
+        painter.fillRect(area, QBrush(shade))
+        painter.setClipping(False)
+        painter.setPen(QPen(QColor("#758473"), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(area.adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
+        x = max(10, min(self.width() - 11,
+                        self.saturation / 255 * (self.width() - 1)))
+        y = max(10, min(self.height() - 11,
+                        (1 - self.value / 255) * (self.height() - 1)))
+        painter.setPen(QPen(QColor("#162019"), 4))
+        painter.drawEllipse(QPointF(x, y), 8, 8)
+        painter.setPen(QPen(QColor("#F3F8ED"), 2.5))
+        painter.drawEllipse(QPointF(x, y), 8, 8)
+        if self.hasFocus():
+            painter.setPen(QPen(QColor("#C4EF70"), 2))
+            painter.drawRoundedRect(area.adjusted(3, 3, -3, -3), 10, 10)
+        painter.end()
+
+
+class HueStrip(QWidget):
+    hueChanged = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.hue = 150
+        self.setFixedHeight(26)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("色相：左右选择颜色")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def setHue(self, hue):
+        self.hue = max(0, min(359, int(hue)))
+        self.update()
+
+    def _pick(self, x):
+        self.setHue(round(max(0.0, min(1.0, x / max(1, self.width() - 1))) * 359))
+        self.hueChanged.emit(self.hue)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
+            self._pick(event.position().x())
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._pick(event.position().x())
+            event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() not in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            super().keyPressEvent(event)
+            return
+        step = 12 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier else 2
+        self.setHue((self.hue + (step if event.key() == Qt.Key.Key_Right else -step)) % 360)
+        self.hueChanged.emit(self.hue)
+        event.accept()
+
+    def paintEvent(self, _event):
+        area = QRectF(0, 3, self.width(), self.height() - 6)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(area.adjusted(1, 1, -1, -1), 8, 8)
+        painter.setClipPath(path)
+        gradient = QLinearGradient(0, 0, self.width(), 0)
+        for index in range(7):
+            gradient.setColorAt(index / 6, QColor.fromHsv(round(index * 359 / 6), 255, 255))
+        painter.fillRect(area, QBrush(gradient))
+        painter.setClipping(False)
+        x = max(10, min(self.width() - 11,
+                        self.hue / 359 * max(1, self.width() - 1)))
+        painter.setPen(QPen(QColor("#172019"), 3))
+        painter.setBrush(QColor.fromHsv(self.hue, 255, 255))
+        painter.drawEllipse(QPointF(x, self.height() / 2), 9, 9)
+        painter.setPen(QPen(QColor("#F3F8ED"), 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(QPointF(x, self.height() / 2), 9, 9)
+        if self.hasFocus():
+            painter.setPen(QPen(QColor("#C4EF70"), 2))
+            painter.drawRoundedRect(area.adjusted(1, 1, -1, -1), 8, 8)
+        painter.end()
 
 
 class KeyboardPreview(QWidget):
@@ -405,6 +590,7 @@ class MainWindow(QMainWindow):
         active = self.settings.get("active_preset")
         self.active_preset = active if active in self.saved_presets else None
         self._updating_controls = False
+        self._picker_sync = False
         if self.active_preset:
             self._set_preset_values(self.saved_presets[self.active_preset])
         saved_category = self.settings.get("gallery_category")
@@ -436,8 +622,10 @@ class MainWindow(QMainWindow):
         self.frame_timer = QTimer(self)
         self.frame_timer.setInterval(33)
         self.frame_timer.timeout.connect(self._frame_tick)
+        self._last_tick_wall = time.time()
+        self._last_health_log = self._last_tick_wall
         self.retry_timer = QTimer(self)
-        self.retry_timer.setInterval(3000)
+        self.retry_timer.setInterval(1200)
         self.retry_timer.timeout.connect(self._connect_device)
         self.mode_timer = QTimer(self)
         self.mode_timer.setInterval(3000)
@@ -666,6 +854,32 @@ class MainWindow(QMainWindow):
                                    self._open_color_editor(which))
             tiles.addWidget(button, 1)
         colors_layout.addLayout(tiles)
+        inspiration_header = QHBoxLayout()
+        inspiration_title = QLabel("配色灵感")
+        inspiration_title.setObjectName("sectionTitle")
+        inspiration_header.addWidget(inspiration_title)
+        inspiration_header.addStretch()
+        self.inspiration_note = QLabel("点一下，直接套用")
+        self.inspiration_note.setObjectName("muted")
+        inspiration_header.addWidget(self.inspiration_note)
+        colors_layout.addLayout(inspiration_header)
+        pairing_grid = QGridLayout()
+        pairing_grid.setSpacing(8)
+        self.pairing_buttons = []
+        for index, (name, base, accent) in enumerate(COLOR_PAIRINGS):
+            button = QPushButton(name)
+            button.setObjectName("palettePair")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setIcon(pair_swatch_icon(base, accent))
+            button.setIconSize(QSize(48, 28))
+            button.setToolTip(f"{name} · {color_hex(base)} + {color_hex(accent)}")
+            button.setAccessibleName(f"套用{name}配色")
+            button.clicked.connect(lambda _checked=False, choice=index:
+                                   self._apply_color_pairing(choice))
+            pairing_grid.addWidget(button, index // 4, index % 4)
+            self.pairing_buttons.append(button)
+        colors_layout.addLayout(pairing_grid)
         global_row = QHBoxLayout()
         global_row.setSpacing(12)
         self.global_button = QPushButton()
@@ -701,26 +915,67 @@ class MainWindow(QMainWindow):
         self.editor_title = QLabel("选择颜色")
         self.editor_title.setObjectName("sectionTitle")
         editor_layout.addWidget(self.editor_title)
-        color_hint = QLabel("自由选色 · 切换到其他窗口或收起程序时，当前颜色会自动保存")
+        color_hint = QLabel("拖动色盘自由选色，也可以输入 HEX 或 RGB 数值")
         color_hint.setObjectName("muted")
         editor_layout.addWidget(color_hint)
-        self.color_editor_layout = editor_layout
-        self.color_dialog = None
-        editor_actions = QHBoxLayout()
-        editor_actions.setSpacing(8)
-        hex_label = QLabel("颜色代码")
+        self.color_field = ColorField()
+        self.color_field.colorChanged.connect(self._picker_color_changed)
+        editor_layout.addWidget(self.color_field)
+        self.hue_strip = HueStrip()
+        self.hue_strip.hueChanged.connect(self.color_field.setHue)
+        editor_layout.addWidget(self.hue_strip)
+        preview_row = QHBoxLayout()
+        preview_row.setSpacing(12)
+        self.color_preview_chip = QFrame()
+        self.color_preview_chip.setObjectName("pickerPreview")
+        self.color_preview_chip.setFixedSize(50, 50)
+        preview_row.addWidget(self.color_preview_chip)
+        preview_text = QVBoxLayout()
+        preview_text.setSpacing(1)
+        preview_caption = QLabel("当前预览")
+        preview_caption.setObjectName("muted")
+        preview_text.addWidget(preview_caption)
+        self.color_preview_label = QLabel("#FFFFFF")
+        self.color_preview_label.setObjectName("pickerValue")
+        preview_text.addWidget(self.color_preview_label)
+        preview_row.addLayout(preview_text)
+        preview_row.addStretch()
+        editor_layout.addLayout(preview_row)
+        precision_row = QHBoxLayout()
+        precision_row.setSpacing(9)
+        hex_label = QLabel("HEX")
         hex_label.setObjectName("muted")
-        editor_actions.addWidget(hex_label)
+        precision_row.addWidget(hex_label)
         self.hex_input = QLineEdit()
         self.hex_input.setMaxLength(7)
         self.hex_input.setPlaceholderText("#RRGGBB")
-        self.hex_input.setFixedWidth(120)
+        self.hex_input.setFixedWidth(116)
         self.hex_input.returnPressed.connect(self._apply_color)
         self.hex_input.textEdited.connect(self._hex_changed)
-        editor_actions.addWidget(self.hex_input)
+        precision_row.addWidget(self.hex_input)
+        self.rgb_inputs = []
+        for label in ("R", "G", "B"):
+            channel_label = QLabel(label)
+            channel_label.setObjectName("muted")
+            precision_row.addWidget(channel_label)
+            channel = QSpinBox()
+            channel.setObjectName("colorChannel")
+            channel.setRange(0, 255)
+            channel.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            channel.setKeyboardTracking(False)
+            channel.setFixedWidth(65)
+            channel.setAccessibleName(f"{label} 通道")
+            channel.valueChanged.connect(self._rgb_inputs_changed)
+            precision_row.addWidget(channel)
+            self.rgb_inputs.append(channel)
+        precision_row.addStretch()
+        editor_layout.addLayout(precision_row)
         self.color_error = QLabel("")
         self.color_error.setStyleSheet("color: #F2B9A9;")
-        editor_actions.addWidget(self.color_error)
+        self.color_error.setMinimumHeight(18)
+        editor_layout.addWidget(self.color_error)
+        editor_actions = QHBoxLayout()
+        editor_actions.setSpacing(8)
         editor_actions.addStretch()
         cancel = QPushButton("取消")
         cancel.setObjectName("quiet")
@@ -730,7 +985,6 @@ class MainWindow(QMainWindow):
         apply.setObjectName("primary")
         apply.clicked.connect(self._apply_color)
         editor_actions.addWidget(apply)
-        self.editor_actions_layout = editor_actions
         editor_layout.addLayout(editor_actions)
         colors_layout.addWidget(self.color_editor)
         self.color_editor.hide()
@@ -1152,6 +1406,20 @@ class MainWindow(QMainWindow):
             self.retry_timer.start()
 
     def _frame_tick(self):
+        wall_now = time.time()
+        tick_gap = wall_now - self._last_tick_wall
+        self._last_tick_wall = wall_now
+        if tick_gap > 8.0 and not self.preview_mode:
+            LOG.warning("Lighting timer paused for %.1f s; refreshing keyboard connection", tick_gap)
+            self.engine.disconnect()
+            if self.engine.effect in MUSIC:
+                self.engine.audio_meter.refresh()
+            self._set_status("正在恢复键盘连接", "paused")
+            self.connection_detail.setText("电脑恢复运行，正在重新连接灯控接口")
+            self._connect_device()
+            if not self.engine.connected:
+                self.retry_timer.start()
+            return
         interval = (20 if self.engine.effect in MUSIC and
                     self.engine.transport == "wired" else 33)
         if self.frame_timer.interval() != interval:
@@ -1163,6 +1431,15 @@ class MainWindow(QMainWindow):
             self._set_status("连接中断，正在重试", "error")
             self.connection_detail.setText("连接中断，正在重新寻找键盘")
             self.retry_timer.start()
+            QTimer.singleShot(0, self._connect_device)
+        if wall_now - self._last_health_log >= 60.0:
+            self._last_health_log = wall_now
+            lit_keys = sum(any(channel for channel in rgb)
+                           for rgb in self.engine.last_frame)
+            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s",
+                     self.engine.connected, self.engine.transport, self.engine.effect,
+                     self.engine.audio_meter.mode, self.engine.audio_level,
+                     lit_keys, self.engine.ripples_enabled)
         self.preview.update()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
@@ -1645,11 +1922,35 @@ class MainWindow(QMainWindow):
         self.accent_button.setVisible(self.engine.effect not in ("audio_ecg", "solid"))
         self.ecg_background_button.setVisible(
             self.engine.effect in ("audio_ecg", "custom_ecg"))
+        self.inspiration_note.setText(
+            "第二色会作为背景" if self.engine.effect == "audio_ecg"
+            else "全键常亮只使用第一色" if self.engine.effect == "solid"
+            else "点一下，直接套用")
+        for button, (_, base, accent) in zip(self.pairing_buttons, COLOR_PAIRINGS):
+            second = (self.engine.ecg_background if self.engine.effect == "audio_ecg"
+                      else self.engine.accent)
+            button.setChecked(self.engine.base == base and second == accent)
+
+    def _apply_color_pairing(self, index):
+        name, base, accent = COLOR_PAIRINGS[index]
+        self._cancel_color_editor()
+        self._detach_active_preset()
+        self.engine.base = base
+        if self.engine.effect == "audio_ecg":
+            self.engine.ecg_background = accent
+        else:
+            self.engine.accent = accent
+        self.effect_palettes[self.engine.effect] = (
+            self.engine.base, self.engine.accent)
+        self.engine.last_frame = self.engine.frame(time.perf_counter())
+        self._update_color_buttons()
+        self.inspiration_note.setText(f"已套用「{name}」")
+        self.preview.update()
+        self._save_settings()
 
     def _open_color_editor(self, target):
         if self.editing_color is not None:
             self._cancel_color_editor()
-        self._ensure_color_dialog()
         self.editing_color = target
         self.editing_original = {
             field: getattr(self.engine, field)
@@ -1662,30 +1963,41 @@ class MainWindow(QMainWindow):
             "修改心电背景色" if target == "ecg_background" else
             "修改爱心颜色" if self.engine.effect == "custom_ecg" else
             "修改波纹色" if self.engine.effect == "ripple" else "修改点缀色")
-        self.hex_input.setText(color_hex(getattr(self.engine, target)))
-        self.color_dialog.setCurrentColor(QColor(self.hex_input.text()))
+        self._set_picker_color(QColor(*getattr(self.engine, target)))
         self.color_error.clear()
         self.color_editor.show()
-        self.hex_input.setFocus()
-        self.hex_input.selectAll()
+        self.color_field.setFocus()
         QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(self.color_editor))
 
-    def _ensure_color_dialog(self):
-        if self.color_dialog is not None:
+    def _set_picker_color(self, color, update_hex=True):
+        if not color.isValid():
             return
-        self.color_dialog = QColorDialog(self.color_editor)
-        self.color_dialog.setOptions(QColorDialog.ColorDialogOption.DontUseNativeDialog |
-                                     QColorDialog.ColorDialogOption.NoButtons)
-        self.color_dialog.setWindowFlags(Qt.WindowType.Widget)
-        self.color_dialog.currentColorChanged.connect(self._color_wheel_changed)
-        insert_at = self.color_editor_layout.indexOf(self.editor_actions_layout)
-        self.color_editor_layout.insertWidget(insert_at, self.color_dialog)
+        self._picker_sync = True
+        try:
+            self.color_field.setColor(color)
+            self.hue_strip.setHue(self.color_field.hue)
+            for channel, number in zip(self.rgb_inputs,
+                                       (color.red(), color.green(), color.blue())):
+                channel.setValue(number)
+            if update_hex:
+                self.hex_input.setText(color.name().upper())
+            self.color_preview_label.setText(color.name().upper())
+            self.color_preview_chip.setStyleSheet(
+                f"background: {color.name()}; border: 1px solid #869284;"
+                "border-radius: 11px;")
+        finally:
+            self._picker_sync = False
+        self.color_error.clear()
+        self._preview_color(color)
 
-    def _color_wheel_changed(self, color):
-        if color.isValid() and self.editing_color:
-            self.hex_input.setText(color.name().upper())
-            self.color_error.clear()
-            self._preview_color(color)
+    def _picker_color_changed(self, color):
+        if not self._picker_sync:
+            self._set_picker_color(color)
+
+    def _rgb_inputs_changed(self, _value=None):
+        if not self._picker_sync:
+            self._set_picker_color(QColor(*(channel.value()
+                                            for channel in self.rgb_inputs)))
 
     def _preview_color(self, color):
         if not self.editing_color:
@@ -1697,9 +2009,11 @@ class MainWindow(QMainWindow):
         self.preview.update()
 
     def _hex_changed(self, value):
-        color = QColor(value)
-        if color.isValid() and len(value) == 7 and self.color_dialog is not None:
-            self.color_dialog.setCurrentColor(color)
+        if re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+            self._set_picker_color(QColor(value), update_hex=False)
+        elif len(value) == 7:
+            self.color_error.setText("颜色代码应为 #RRGGBB")
+        else:
             self.color_error.clear()
 
     def _cancel_color_editor(self):

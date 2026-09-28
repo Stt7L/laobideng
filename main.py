@@ -9,11 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "老必灯"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-handler = RotatingFileHandler(DATA_DIR / "runtime.log", maxBytes=512_000,
+log_path = DATA_DIR / "runtime.log"
+handler = RotatingFileHandler(log_path, maxBytes=512_000,
                               backupCount=2, encoding="utf-8")
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.getLogger("vgn-ripple").addHandler(handler)
-logging.getLogger("vgn-ripple").setLevel(logging.INFO)
+app_logger = logging.getLogger("vgn-ripple")
+app_logger.addHandler(handler)
+app_logger.setLevel(logging.INFO)
+app_logger.propagate = False
+app_logger.info("Application starting: pid=%s log=%s", os.getpid(), log_path)
 
 
 def log_unhandled(error_type, error, trace):
