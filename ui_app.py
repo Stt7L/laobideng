@@ -1,6 +1,7 @@
 """Desktop UI and lifecycle for 老必灯."""
 
 import ctypes
+from functools import lru_cache
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl, Signal
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
@@ -40,6 +41,24 @@ PROJECT_URL = "https://github.com/Stt7L/laobideng"
 LOG = logging.getLogger("vgn-ripple")
 STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_VALUE = "LaoBiDeng"
+
+
+def load_ui_font():
+    font_dir = ROOT / "assets" / "fonts"
+    for family in ("HarmonyOS_Sans", "HarmonyOS_Sans_SC"):
+        for weight in ("Regular", "Medium", "Bold"):
+            bundled = font_dir / f"{family}_{weight}.ttf"
+            if bundled.is_file():
+                QFontDatabase.addApplicationFont(str(bundled))
+
+
+@lru_cache(maxsize=1)
+def ui_font():
+    """Use the bundled Chinese HarmonyOS Sans family throughout the UI."""
+    families = set(QFontDatabase.families())
+    if "HarmonyOS Sans SC" in families:
+        return "HarmonyOS Sans SC"
+    return "Microsoft YaHei UI"
 
 PAIRING_MOODS = ("清新", "暖调", "霓虹", "柔和", "撞色", "复古", "自然")
 COLOR_PAIRINGS = (
@@ -194,6 +213,199 @@ def chevron_icon(up=False):
     return QIcon(pixmap)
 
 
+def control_icon(kind, color="#D8E4D2"):
+    """Small, consistent line icons for actions and category controls."""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 1.8)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    if kind == "settings":
+        painter.drawEllipse(QRectF(5, 5, 10, 10))
+        painter.drawEllipse(QRectF(8, 8, 4, 4))
+        for a, b, c, d in ((10, 1.5, 10, 4), (10, 16, 10, 18.5),
+                            (1.5, 10, 4, 10), (16, 10, 18.5, 10),
+                            (4, 4, 5.8, 5.8), (14.2, 14.2, 16, 16),
+                            (4, 16, 5.8, 14.2), (14.2, 5.8, 16, 4)):
+            painter.drawLine(QPointF(a, b), QPointF(c, d))
+    elif kind == "back":
+        painter.drawLine(QPointF(11, 4), QPointF(5, 10))
+        painter.drawLine(QPointF(5, 10), QPointF(11, 16))
+        painter.drawLine(QPointF(5, 10), QPointF(17, 10))
+    elif kind == "music":
+        for x, top, bottom in ((4, 7, 13), (8, 3, 17),
+                               (12, 6, 14), (16, 4, 16)):
+            painter.drawLine(QPointF(x, top), QPointF(x, bottom))
+    elif kind == "reactive":
+        painter.drawEllipse(QRectF(7, 7, 6, 6))
+        painter.drawArc(QRectF(3, 3, 14, 14), 20 * 16, 130 * 16)
+        painter.drawArc(QRectF(3, 3, 14, 14), 200 * 16, 130 * 16)
+    elif kind == "custom":
+        painter.drawLine(QPointF(4, 15), QPointF(14.5, 4.5))
+        painter.drawLine(QPointF(13.5, 3.5), QPointF(16.5, 6.5))
+        painter.drawLine(QPointF(3, 17), QPointF(7, 16))
+    elif kind == "regular":
+        painter.drawEllipse(QRectF(6.5, 6.5, 7, 7))
+        for a, b, c, d in ((10, 1.5, 10, 4), (10, 16, 10, 18.5),
+                            (1.5, 10, 4, 10), (16, 10, 18.5, 10)):
+            painter.drawLine(QPointF(a, b), QPointF(c, d))
+    elif kind == "refresh":
+        painter.drawArc(QRectF(3, 3, 14, 14), 40 * 16, 290 * 16)
+        painter.drawLine(QPointF(15.8, 3.8), QPointF(16.5, 8.1))
+        painter.drawLine(QPointF(16.5, 8.1), QPointF(12.4, 7.5))
+    elif kind == "save":
+        painter.drawLine(QPointF(10, 3), QPointF(10, 12))
+        painter.drawLine(QPointF(6.5, 9), QPointF(10, 12.5))
+        painter.drawLine(QPointF(13.5, 9), QPointF(10, 12.5))
+        painter.drawLine(QPointF(4, 14), QPointF(4, 17))
+        painter.drawLine(QPointF(4, 17), QPointF(16, 17))
+        painter.drawLine(QPointF(16, 17), QPointF(16, 14))
+    elif kind == "power":
+        painter.drawLine(QPointF(10, 2), QPointF(10, 9))
+        painter.drawArc(QRectF(3, 4, 14, 14), 135 * 16, 270 * 16)
+    elif kind == "pause":
+        painter.drawLine(QPointF(7, 4), QPointF(7, 16))
+        painter.drawLine(QPointF(13, 4), QPointF(13, 16))
+    elif kind == "play":
+        painter.drawLine(QPointF(6, 3.5), QPointF(16, 10))
+        painter.drawLine(QPointF(16, 10), QPointF(6, 16.5))
+        painter.drawLine(QPointF(6, 16.5), QPointF(6, 3.5))
+    elif kind == "add":
+        painter.drawLine(QPointF(10, 3), QPointF(10, 17))
+        painter.drawLine(QPointF(3, 10), QPointF(17, 10))
+    elif kind == "clear":
+        painter.drawLine(QPointF(4, 4), QPointF(16, 16))
+        painter.drawLine(QPointF(16, 4), QPointF(4, 16))
+    elif kind == "external":
+        painter.drawLine(QPointF(4, 16), QPointF(15, 5))
+        painter.drawLine(QPointF(9, 5), QPointF(15, 5))
+        painter.drawLine(QPointF(15, 5), QPointF(15, 11))
+    elif kind == "palette":
+        painter.drawEllipse(QRectF(2.5, 2.5, 15, 15))
+        painter.drawEllipse(QRectF(5, 6, 1.8, 1.8))
+        painter.drawEllipse(QRectF(8.5, 4.5, 1.8, 1.8))
+        painter.drawEllipse(QRectF(12.5, 7, 1.8, 1.8))
+        painter.drawEllipse(QRectF(6.5, 11.5, 1.8, 1.8))
+    elif kind == "sliders":
+        for y, x in ((4.5, 7), (10, 13), (15.5, 9)):
+            painter.drawLine(QPointF(3, y), QPointF(17, y))
+            painter.drawEllipse(QRectF(x - 1.5, y - 1.5, 3, 3))
+    elif kind == "device":
+        painter.drawRoundedRect(QRectF(2.5, 5, 15, 10), 2, 2)
+        painter.drawLine(QPointF(6, 9), QPointF(14, 9))
+        painter.drawLine(QPointF(7, 12), QPointF(13, 12))
+    painter.end()
+    return QIcon(pixmap)
+
+
+class EffectChoiceButton(QPushButton):
+    """An effect option with distinct title, description and selection states."""
+
+    def __init__(self, title, description, parent=None):
+        super().__init__(parent)
+        self.title = title
+        self.description = description
+        self.setCheckable(True)
+        self.setMinimumHeight(68)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        checked = self.isChecked()
+        hovered = self.underMouse()
+        pressed = self.isDown()
+        if not self.isEnabled():
+            background, border, title_color, detail_color = (
+                "#202822", "#354136", "#778575", "#657461")
+        elif pressed:
+            background, border, title_color, detail_color = (
+                "#263528", "#C4EF70", "#F1F9E6", "#B9CEAA")
+        elif checked:
+            background, border, title_color, detail_color = (
+                "#34462E", "#C4EF70", "#ECF9D8", "#C6DAB6")
+        elif hovered:
+            background, border, title_color, detail_color = (
+                "#303D32", "#7B9073", "#F2F6EE", "#C9D5C3")
+        else:
+            background, border, title_color, detail_color = (
+                "#252E27", "#3C493E", "#E7EEE2", "#AEBDA9")
+        rect = QRectF(1, 1 + (1 if pressed else 0),
+                      self.width() - 2, self.height() - 3)
+        painter.setBrush(QColor(background))
+        painter.setPen(QPen(QColor(border), 1.5 if checked else 1))
+        painter.drawRoundedRect(rect, 13, 13)
+        if self.hasFocus():
+            painter.setPen(QPen(QColor("#E2FBAF"), 1.5))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 10, 10)
+        title_font = QFont(ui_font(), 10, QFont.Weight.DemiBold)
+        painter.setFont(title_font)
+        painter.setPen(QColor(title_color))
+        title_width = max(20, self.width() - (48 if checked else 28))
+        painter.drawText(QRectF(14, 11, title_width, 23),
+                         Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             self.title, Qt.TextElideMode.ElideRight,
+                             int(title_width)))
+        detail_font = QFont(ui_font(), 9)
+        painter.setFont(detail_font)
+        painter.setPen(QColor(detail_color))
+        detail_width = max(20, self.width() - 28)
+        painter.drawText(QRectF(14, 35, detail_width, 22),
+                         Qt.AlignmentFlag.AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             self.description, Qt.TextElideMode.ElideRight,
+                             int(detail_width)))
+        if checked:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#C4EF70"))
+            painter.drawEllipse(QPointF(self.width() - 19, 23), 3.5, 3.5)
+        painter.end()
+
+
+class SwitchButton(QPushButton):
+    """A wide setting row with a native-looking, accessible on/off switch."""
+
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self.setCheckable(True)
+        self.setMinimumHeight(48)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        enabled = self.isEnabled()
+        checked = self.isChecked()
+        hovered = self.underMouse() and enabled
+        pressed = self.isDown() and enabled
+        background = "#202B23" if pressed else "#303C32" if hovered else "#263128"
+        border = "#C4EF70" if self.hasFocus() else (
+            "#78916F" if hovered else "#405043")
+        painter.setBrush(QColor(background if enabled else "#202822"))
+        painter.setPen(QPen(QColor(border), 1))
+        painter.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1,
+                                        self.height() - 1), 12, 12)
+        painter.setFont(QFont(ui_font(), 10, QFont.Weight.DemiBold))
+        painter.setPen(QColor("#EAF2E4" if enabled else "#778575"))
+        painter.drawText(QRectF(16, 0, self.width() - 90, self.height()),
+                         Qt.AlignmentFlag.AlignVCenter, self.text())
+        track = QRectF(self.width() - 65, (self.height() - 26) / 2, 48, 26)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#C4EF70" if checked and enabled else "#566459"))
+        painter.drawRoundedRect(track, 13, 13)
+        thumb_x = track.right() - 13 if checked else track.left() + 13
+        painter.setBrush(QColor("#F8FBF5" if enabled else "#B3BEB1"))
+        painter.drawEllipse(QPointF(thumb_x, track.center().y() + (1 if pressed else 0)),
+                            9 if pressed else 10, 9 if pressed else 10)
+        painter.end()
+
+
 class NoWheelSpinBox(QDoubleSpinBox):
     def wheelEvent(self, event):
         event.ignore()
@@ -254,10 +466,10 @@ class FineSlider(QSlider):
         x = self._position(self._visual_fraction)
         track = QRectF(2, center_y - 15, max(1, self.width() - 4), 30)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#3B453D"))
+        painter.setBrush(QColor("#303B32"))
         painter.drawRoundedRect(track, 15, 15)
         fill = QRectF(4, center_y - 13, max(0, x - 4), 26)
-        painter.setBrush(QColor("#536B48" if self.isSliderDown() else "#4A6044"))
+        painter.setBrush(QColor("#A8D66A" if self.isSliderDown() else "#8FBB5E"))
         painter.drawRoundedRect(fill, 13, 13)
         show_marks = self._hovered or self.isSliderDown() or self.hasFocus()
         if show_marks:
@@ -265,16 +477,16 @@ class FineSlider(QSlider):
                 fraction = (mark - self.minimum()) / max(1, self.maximum() - self.minimum())
                 dot_x = self._position(fraction)
                 active = mark == self._active_snap and self.isSliderDown()
-                painter.setBrush(QColor("#DFFF9C" if active else "#9BA69A"))
-                diameter = 5 if active else 3.5
+                painter.setBrush(QColor("#F0FFCF" if active else "#B9C7B5"))
+                diameter = 4.5 if active else 2.8
                 painter.drawEllipse(QPointF(dot_x, center_y), diameter, diameter)
         if self.isSliderDown() or self._hovered:
             painter.setBrush(QColor(196, 239, 112, 43 if self.isSliderDown() else 23))
             painter.drawEllipse(QPointF(x, center_y), 17, 17)
         thumb_radius = 11 if self.isSliderDown() else 12
-        painter.setBrush(QColor(9, 15, 10, 70))
+        painter.setBrush(QColor(9, 15, 10, 88))
         painter.drawEllipse(QPointF(x, center_y + 2), thumb_radius + 1, thumb_radius + 1)
-        painter.setPen(QPen(QColor("#F4FFE4" if self.isSliderDown() else "#F8FBF4"), 1))
+        painter.setPen(QPen(QColor("#EEF8E4" if self.isSliderDown() else "#FFFFFF"), 1))
         painter.setBrush(QColor("#FFFFFF"))
         painter.drawEllipse(QPointF(x, center_y), thumb_radius, thumb_radius)
         if self.isSliderDown():
@@ -360,6 +572,7 @@ class ColorField(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("颜色区域：左右调整鲜艳度，上下调整明暗")
         self.setCursor(Qt.CursorShape.CrossCursor)
+        self._hovered = False
 
     def setColor(self, color):
         if color.hue() >= 0:
@@ -424,7 +637,7 @@ class ColorField(QWidget):
         shade.setColorAt(1, QColor(0, 0, 0))
         painter.fillRect(area, QBrush(shade))
         painter.setClipping(False)
-        painter.setPen(QPen(QColor("#758473"), 1))
+        painter.setPen(QPen(QColor("#A5B89B" if self._hovered else "#758473"), 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(area.adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
         x = max(10, min(self.width() - 11,
@@ -440,6 +653,16 @@ class ColorField(QWidget):
             painter.drawRoundedRect(area.adjusted(3, 3, -3, -3), 10, 10)
         painter.end()
 
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
 
 class HueStrip(QWidget):
     hueChanged = Signal(int)
@@ -451,6 +674,7 @@ class HueStrip(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("色相：左右选择颜色")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._hovered = False
 
     def setHue(self, hue):
         self.hue = max(0, min(359, int(hue)))
@@ -503,7 +727,20 @@ class HueStrip(QWidget):
         if self.hasFocus():
             painter.setPen(QPen(QColor("#C4EF70"), 2))
             painter.drawRoundedRect(area.adjusted(1, 1, -1, -1), 8, 8)
+        elif self._hovered:
+            painter.setPen(QPen(QColor("#D6E8C7"), 1.5))
+            painter.drawRoundedRect(area.adjusted(1, 1, -1, -1), 8, 8)
         painter.end()
+
+    def enterEvent(self, event):
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
 
 
 class KeyboardPreview(QWidget):
@@ -599,14 +836,14 @@ class KeyboardPreview(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#384439"), 1))
-        painter.setBrush(QColor("#1A211B"))
-        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 20, 20)
+        painter.setPen(QPen(QColor("#303B31"), 1))
+        painter.setBrush(QColor("#1D241E"))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 19, 19)
         painter.setPen(QColor("#EAF3DE"))
-        painter.setFont(QFont("Microsoft YaHei UI", 10, QFont.Weight.DemiBold))
+        painter.setFont(QFont(ui_font(), 10, QFont.Weight.DemiBold))
         painter.drawText(20, 30, f"{getattr(self, 'model', 'V98 Pro')}  /  键位预览")
-        painter.setPen(QColor("#9AAA97"))
-        painter.setFont(QFont("Microsoft YaHei UI", 9))
+        painter.setPen(QColor("#A9B5A7"))
+        painter.setFont(QFont(ui_font(), 9))
         painter.drawText(self.width() - 166, 30,
                          "点按切换 · 拖动连画" if self._editable() else
                          f"实时灯效 · {len(KEYCAPS)} 键")
@@ -615,11 +852,11 @@ class KeyboardPreview(QWidget):
         painter.save()
         painter.translate(x0, y0)
         painter.scale(scale, scale)
-        painter.setPen(QPen(QColor("#414942"), 1.5))
-        painter.setBrush(QColor("#2A302B"))
+        painter.setPen(QPen(QColor("#39453B"), 1.5))
+        painter.setBrush(QColor("#161D18"))
         painter.drawRoundedRect(QRectF(0, 0, 790, 270), 18, 18)
         frame = self.engine.preview_frame()
-        label_font = QFont("Microsoft YaHei UI")
+        label_font = QFont(ui_font())
         label_font.setPixelSize(12)
         label_font.setWeight(QFont.Weight.DemiBold)
         painter.setFont(label_font)
@@ -627,12 +864,12 @@ class KeyboardPreview(QWidget):
             cx, cy, cw, ch = cap.x - 48, cap.y - 43, cap.w, cap.h
             colors = [frame[led] for led in cap.leds if led < len(frame)]
             rgb = tuple(round(sum(color[i] for color in colors) / len(colors))
-                        for i in range(3)) if colors else (40, 46, 40)
+                        for i in range(3)) if colors else (36, 43, 37)
             lit = QColor(*rgb)
             light_share = 0.86 if self.engine.effect in ("audio_ecg", "custom_ecg",
                                                          "custom_canvas",
                                                          "custom_sparkle") else 0.62
-            surface = QColor(*(round(34 * (1 - light_share) + c * light_share)
+            surface = QColor(*(round(28 * (1 - light_share) + c * light_share)
                                for c in rgb))
             painter.setPen(QPen(QColor("#C4EF70") if self._editable() and
                                 cap.name == self._hover_key else lit.lighter(125),
@@ -655,7 +892,7 @@ class KeyboardPreview(QWidget):
                          [cx + cw])
                 for index, (_, segment_rgb) in enumerate(led_segments):
                     segment_color = QColor(*(
-                        round(34 * (1 - light_share) + c * light_share)
+                        round(28 * (1 - light_share) + c * light_share)
                         for c in segment_rgb))
                     painter.fillRect(QRectF(edges[index], cy,
                                             edges[index + 1] - edges[index], ch),
@@ -753,9 +990,10 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"老必灯 · {self.profile['model'] if self.profile else '键盘灯效工作室'}")
         self.setWindowIcon(QIcon(str(ICON)))
-        self.setMinimumSize(680, 620)
+        self.setMinimumSize(900, 620)
         available = QApplication.primaryScreen().availableGeometry()
-        self.resize(790, min(780, max(620, available.height() - 80)))
+        self.resize(min(1120, available.width() - 60),
+                    min(800, max(620, available.height() - 80)))
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(350)
@@ -841,50 +1079,111 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setObjectName("root")
         self.setCentralWidget(root)
-        outer = QVBoxLayout(root)
+        outer = QHBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self.page_stack = QStackedWidget()
-        outer.addWidget(self.page_stack)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.page_stack.addWidget(scroll)
-        body = QWidget()
-        body.setObjectName("root")
-        scroll.setWidget(body)
-        self.scroll = scroll
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(28, 27, 28, 24)
-        layout.setSpacing(16)
-
-        header = QHBoxLayout()
-        header.setSpacing(14)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(208)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(18, 24, 18, 20)
+        side.setSpacing(8)
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
         logo = QLabel()
-        logo.setPixmap(QIcon(str(ICON)).pixmap(QSize(52, 52)))
-        logo.setFixedSize(52, 52)
-        header.addWidget(logo)
-        title_column = QVBoxLayout()
-        title_column.setSpacing(1)
+        logo.setPixmap(QIcon(str(ICON)).pixmap(QSize(42, 42)))
+        logo.setFixedSize(42, 42)
+        brand.addWidget(logo)
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(0)
         title = QLabel("老必灯")
         title.setObjectName("brandTitle")
-        title_column.addWidget(title)
-        subtitle = QLabel("逐键灯效工作室  ·  本地键位追踪")
+        brand_text.addWidget(title)
+        subtitle = QLabel("键盘灯效工作室")
         subtitle.setObjectName("brandSub")
-        title_column.addWidget(subtitle)
-        header.addLayout(title_column)
-        header.addStretch()
-        settings_button = QPushButton("设置")
-        settings_button.setObjectName("secondary")
-        settings_button.setFixedWidth(78)
-        settings_button.clicked.connect(lambda: self.page_stack.setCurrentIndex(1))
-        header.addWidget(settings_button)
+        brand_text.addWidget(subtitle)
+        brand.addLayout(brand_text)
+        side.addLayout(brand)
+        side.addSpacing(26)
+        side_caption = QLabel("工作区")
+        side_caption.setObjectName("sideCaption")
+        side.addWidget(side_caption)
+        side.addSpacing(5)
+        self.nav_buttons = []
+        sections = (
+            ("灯效画廊", "regular"),
+            ("颜色搭配", "palette"),
+            ("灯效参数", "sliders"),
+            ("我的预设", "save"),
+            ("设备与设置", "device"),
+        )
+        for index, (label, icon_name) in enumerate(sections):
+            button = QPushButton(label)
+            button.setObjectName("sideNav")
+            button.setCheckable(True)
+            button.setIcon(control_icon(icon_name))
+            button.setIconSize(QSize(19, 19))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, page=index:
+                                   self._show_section(page))
+            side.addWidget(button)
+            self.nav_buttons.append(button)
+        side.addStretch()
+        side_footer = QLabel("Stt7L  ·  本地运行")
+        side_footer.setObjectName("hint")
+        side.addWidget(side_footer)
+        outer.addWidget(sidebar)
+
+        workspace = QWidget()
+        workspace.setObjectName("root")
+        workspace_layout = QVBoxLayout(workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        topbar = QFrame()
+        topbar.setObjectName("workspaceTopbar")
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(30, 21, 30, 20)
+        topbar_layout.setSpacing(16)
+        page_heading = QVBoxLayout()
+        page_heading.setSpacing(2)
+        self.workspace_title = QLabel("灯效画廊")
+        self.workspace_title.setObjectName("workspaceTitle")
+        page_heading.addWidget(self.workspace_title)
+        self.workspace_subtitle = QLabel("预览、选择并调整键盘灯效")
+        self.workspace_subtitle.setObjectName("brandSub")
+        page_heading.addWidget(self.workspace_subtitle)
+        topbar_layout.addLayout(page_heading)
+        topbar_layout.addStretch()
         self.status = QLabel("正在连接")
         self.status.setObjectName("statusPaused")
         self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.addWidget(self.status)
-        layout.addLayout(header)
+        topbar_layout.addWidget(self.status)
+        workspace_layout.addWidget(topbar)
+
+        self.page_stack = QStackedWidget()
+        workspace_layout.addWidget(self.page_stack, 1)
+        outer.addWidget(workspace, 1)
+
+        def make_page():
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.page_stack.addWidget(scroll)
+            body = QWidget()
+            body.setObjectName("root")
+            scroll.setWidget(body)
+            content = QVBoxLayout(body)
+            content.setContentsMargins(30, 25, 30, 30)
+            content.setSpacing(18)
+            return scroll, content
+
+        self.scroll, layout = make_page()
+        self.color_scroll, palette_page = make_page()
+        self.tuning_scroll, tuning_page = make_page()
+        self.presets_scroll, presets_page = make_page()
+        self.settings_scroll, settings_page = make_page()
 
         self.preview = KeyboardPreview(self.engine)
         self.preview.model = self.profile.get("model", "V98 Pro") if self.profile else "V98 Pro"
@@ -904,6 +1203,10 @@ class MainWindow(QMainWindow):
                                      ("保存图案", self._save_custom_keys, "primary")):
             button = QPushButton(text)
             button.setObjectName(style)
+            button.setIcon(control_icon(
+                "clear" if text == "清空画布" else
+                "regular" if text == "全部点亮" else "save",
+                "#1B2615" if style == "primary" else "#D8E4D2"))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(handler)
             custom_actions.addWidget(button, 1)
@@ -915,7 +1218,7 @@ class MainWindow(QMainWindow):
         self._refresh_custom_editor()
 
         effects_card, effects_layout = self._card("灯效画廊")
-        effects_hint = QLabel("点击分类展开灯效；可用下方预设把一套配色用于所有灯效")
+        effects_hint = QLabel("选择分类与灯效；常用配色和参数可保存为预设")
         effects_hint.setObjectName("muted")
         effects_layout.addWidget(effects_hint)
         gallery_controls = QHBoxLayout()
@@ -932,19 +1235,20 @@ class MainWindow(QMainWindow):
         category_grids = {}
         for index, (category, title, subtitle) in enumerate(CATEGORIES):
             count = sum(EFFECT_CATEGORY[item[0]] == category for item in EFFECTS)
-            button = QPushButton(f"{title}  {count}")
+            button = QPushButton(f"{title} · {count}")
             button.setObjectName("categoryChoice")
             button.setCheckable(True)
             button.setAccessibleName(f"{title}，{count} 种，点击展开或收起")
             button.setToolTip(subtitle)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setIcon(control_icon(category))
             button.setIconSize(QSize(16, 16))
             button.clicked.connect(lambda _checked=False, chosen=category:
                                    self._toggle_category(chosen))
-            category_row.addWidget(button, index // 2, index % 2)
+            category_row.addWidget(button, 0, index)
             self.category_buttons[category] = button
-        category_row.setColumnStretch(0, 1)
-        category_row.setColumnStretch(1, 1)
+        for column in range(len(CATEGORIES)):
+            category_row.setColumnStretch(column, 1)
         effects_layout.addLayout(category_row)
         for category, title, subtitle in CATEGORIES:
             panel = QWidget()
@@ -958,9 +1262,8 @@ class MainWindow(QMainWindow):
         self.effect_buttons = {}
         category_positions = {category: 0 for category, _, _ in CATEGORIES}
         for effect_id, title, description in EFFECTS:
-            button = QPushButton(f"{title}\n{description}")
+            button = EffectChoiceButton(title, description)
             button.setObjectName("effectChoice")
-            button.setCheckable(True)
             button.setChecked(effect_id == self.engine.effect)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _checked=False, chosen=effect_id:
@@ -977,15 +1280,15 @@ class MainWindow(QMainWindow):
         music_status_row.addWidget(self.music_status, 1)
         self.audio_refresh = QPushButton("刷新音频设备")
         self.audio_refresh.setObjectName("quiet")
+        self.audio_refresh.setIcon(control_icon("refresh"))
+        self.audio_refresh.setIconSize(QSize(17, 17))
         self.audio_refresh.clicked.connect(self._refresh_audio_device)
         music_status_row.addWidget(self.audio_refresh)
         effects_layout.addLayout(music_status_row)
         self._refresh_gallery()
 
-        colors_layout = effects_layout
-        palette_heading = QLabel("颜色搭配")
-        palette_heading.setObjectName("sectionTitle")
-        colors_layout.addWidget(palette_heading)
+        layout.addWidget(effects_card)
+        colors_card, colors_layout = self._card("颜色搭配")
         self.palette_hint = QLabel()
         self.palette_hint.setObjectName("muted")
         colors_layout.addWidget(self.palette_hint)
@@ -1020,6 +1323,7 @@ class MainWindow(QMainWindow):
         global_row.addWidget(self.global_button, 1)
         self.global_apply_button = QPushButton("同步全部底色与点缀色")
         self.global_apply_button.setObjectName("secondary")
+        self.global_apply_button.setIcon(control_icon("refresh"))
         self.global_apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.global_apply_button.setToolTip("把全局颜色同时同步为全部灯效的底色和点缀色")
         self.global_apply_button.clicked.connect(self._sync_global_color)
@@ -1040,6 +1344,7 @@ class MainWindow(QMainWindow):
         inspiration_layout = QVBoxLayout(self.inspiration_panel)
         inspiration_layout.setContentsMargins(0, 0, 0, 0)
         inspiration_layout.setSpacing(8)
+        inspiration_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         mood_row = QHBoxLayout()
         mood_row.setSpacing(8)
         self.pairing_mood_buttons = {}
@@ -1166,7 +1471,8 @@ class MainWindow(QMainWindow):
         colors_layout.addWidget(self.color_editor)
         self.color_editor.hide()
         self._update_palette_hint()
-        layout.addWidget(effects_card)
+        palette_page.addWidget(colors_card)
+        palette_page.addStretch()
 
         settings_card, settings_layout = self._card("灯效设置")
         self.brightness_slider, self.brightness_value, _ = self._slider_row(
@@ -1197,7 +1503,8 @@ class MainWindow(QMainWindow):
         settings_hint = QLabel("拖动可细调；靠近圆点时轻轻吸附。也可在右侧直接输入数值")
         settings_hint.setObjectName("hint")
         settings_layout.addWidget(settings_hint)
-        layout.addWidget(settings_card)
+        tuning_page.addWidget(settings_card)
+        tuning_page.addStretch()
 
         presets_card, presets_layout = self._card("我的灯光预设")
         presets_hint = QLabel("保存当前配色与亮度、速度、宽度；应用后切换灯效继续使用")
@@ -1214,6 +1521,7 @@ class MainWindow(QMainWindow):
         save_row.addWidget(self.preset_name_input, 1)
         self.preset_save_button = QPushButton("保存当前设置")
         self.preset_save_button.setObjectName("primary")
+        self.preset_save_button.setIcon(control_icon("save", "#1B2615"))
         self.preset_save_button.clicked.connect(self._save_preset)
         save_row.addWidget(self.preset_save_button)
         presets_layout.addLayout(save_row)
@@ -1225,6 +1533,7 @@ class MainWindow(QMainWindow):
         use_row.addWidget(self.preset_combo, 1)
         self.preset_apply_button = QPushButton("应用预设")
         self.preset_apply_button.setObjectName("secondary")
+        self.preset_apply_button.setIcon(control_icon("refresh"))
         self.preset_apply_button.clicked.connect(self._apply_selected_preset)
         use_row.addWidget(self.preset_apply_button)
         self.preset_delete_button = QPushButton("删除")
@@ -1237,7 +1546,8 @@ class MainWindow(QMainWindow):
         self.preset_status.setWordWrap(True)
         presets_layout.addWidget(self.preset_status)
         self._refresh_preset_controls(self.active_preset)
-        layout.addWidget(presets_card)
+        presets_page.addWidget(presets_card)
+        presets_page.addStretch()
 
         connection_card, connection_layout = self._card("连接方式")
         transport_grid = QGridLayout()
@@ -1273,8 +1583,9 @@ class MainWindow(QMainWindow):
         self.wireless_note.hide()
         connection_layout.addWidget(self.wireless_note)
 
-        self.adapter_toggle = QPushButton("＋  提供其他键盘的适配资料")
+        self.adapter_toggle = QPushButton("提供其他键盘的适配资料")
         self.adapter_toggle.setObjectName("actionSecondary")
+        self.adapter_toggle.setIcon(control_icon("add"))
         self.adapter_toggle.setFixedHeight(46)
         self.adapter_toggle.setCheckable(True)
         self.adapter_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1324,6 +1635,7 @@ class MainWindow(QMainWindow):
         self.adapter_photo_path = None
         export_button = QPushButton("导出适配资料")
         export_button.setObjectName("primary")
+        export_button.setIcon(control_icon("save", "#1B2615"))
         export_button.setCursor(Qt.CursorShape.PointingHandCursor)
         export_button.clicked.connect(self._export_adapter_request)
         adapter_layout.addWidget(export_button)
@@ -1340,12 +1652,14 @@ class MainWindow(QMainWindow):
             action_grid.setColumnStretch(column, 1)
         self.toggle_button = QPushButton()
         self.toggle_button.setObjectName("actionPrimary")
+        self.toggle_button.setIcon(control_icon("pause", "#1B2615"))
         self.toggle_button.setFixedHeight(46)
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.clicked.connect(self._toggle_effect)
         action_grid.addWidget(self.toggle_button, 0, 0, 1, 2)
         exit_button = QPushButton("退出程序")
         exit_button.setObjectName("actionSecondary")
+        exit_button.setIcon(control_icon("power"))
         exit_button.setFixedHeight(46)
         exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         exit_button.clicked.connect(self.exit_app)
@@ -1358,28 +1672,6 @@ class MainWindow(QMainWindow):
         hint.setWordWrap(True)
         layout.addWidget(hint)
         layout.addStretch()
-
-        settings_scroll = QScrollArea()
-        settings_scroll.setWidgetResizable(True)
-        settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.page_stack.addWidget(settings_scroll)
-        settings_body = QWidget()
-        settings_body.setObjectName("root")
-        settings_scroll.setWidget(settings_body)
-        settings_page = QVBoxLayout(settings_body)
-        settings_page.setContentsMargins(28, 27, 28, 24)
-        settings_page.setSpacing(16)
-        settings_header = QHBoxLayout()
-        back_button = QPushButton("←  返回灯效")
-        back_button.setObjectName("quiet")
-        back_button.clicked.connect(lambda: self.page_stack.setCurrentIndex(0))
-        settings_header.addWidget(back_button)
-        settings_header.addStretch()
-        settings_title = QLabel("设置")
-        settings_title.setObjectName("brandTitle")
-        settings_header.addWidget(settings_title)
-        settings_page.addLayout(settings_header)
 
         device_card, device_layout = self._card("我的键盘")
         self.profile_summary = QLabel()
@@ -1396,7 +1688,7 @@ class MainWindow(QMainWindow):
         startup_note = QLabel("登录 Windows 后自动运行，灯效在托盘中持续工作。")
         startup_note.setObjectName("muted")
         startup_layout.addWidget(startup_note)
-        self.startup_button = QPushButton("开机自启")
+        self.startup_button = SwitchButton("开机自启")
         self.startup_button.setObjectName("startupToggle")
         self.startup_button.setCheckable(True)
         self.startup_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1411,21 +1703,49 @@ class MainWindow(QMainWindow):
         author = QLabel("作者  Stt7L")
         author.setObjectName("muted")
         author_layout.addWidget(author)
-        github_button = QPushButton("GitHub 项目  ↗")
+        font_notice = QLabel("界面使用 HarmonyOS Sans 字体 · © 2021 Huawei Device Co., Ltd.")
+        font_notice.setObjectName("muted")
+        author_layout.addWidget(font_notice)
+        font_license = QPushButton("HarmonyOS Sans 字体许可")
+        font_license.setObjectName("galleryToggle")
+        font_license.setIcon(control_icon("external"))
+        font_license.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(
+            "https://github.com/openharmony/global_system_resources/blob/master/LICENSE_Fonts"
+        )))
+        author_layout.addWidget(font_license)
+        github_button = QPushButton("GitHub 项目")
         github_button.setObjectName("galleryToggle")
+        github_button.setIcon(control_icon("external"))
         github_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(PROJECT_URL)))
         author_layout.addWidget(github_button)
         settings_page.addWidget(author_card)
         settings_page.addStretch()
         self._refresh_profile_summary()
         self._refresh_toggle_labels()
+        self._show_section(0)
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def _show_section(self, index):
+        section_titles = (
+            ("灯效画廊", "预览、选择并调整键盘灯效"),
+            ("颜色搭配", "让灯光呈现你喜欢的配色"),
+            ("灯效参数", "亮度、速度和光带宽度"),
+            ("我的预设", "保存并复用你的灯光方案"),
+            ("设备与设置", "键盘、连接方式与后台运行"),
+        )
+        self.page_stack.setCurrentIndex(index)
+        self.workspace_title.setText(section_titles[index][0])
+        self.workspace_subtitle.setText(section_titles[index][1])
+        for page, button in enumerate(self.nav_buttons):
+            button.setChecked(page == index)
 
     def _card(self, title):
         card = QFrame()
         card.setObjectName("surface")
         content = QVBoxLayout(card)
-        content.setContentsMargins(19, 17, 19, 19)
-        content.setSpacing(15)
+        content.setContentsMargins(21, 19, 21, 21)
+        content.setSpacing(16)
         heading = QLabel(title)
         heading.setObjectName("sectionTitle")
         content.addWidget(heading)
@@ -1436,7 +1756,7 @@ class MainWindow(QMainWindow):
         enabled = startup_enabled()
         self.startup_button.setEnabled(available)
         self.startup_button.setChecked(enabled)
-        self.startup_button.setText("✓  已开启开机自启" if enabled else "开启开机自启")
+        self.startup_button.setText("开机自启")
         self.startup_status.setText(
             "下次登录后自动在托盘运行" if enabled else
             "安装老必灯后可使用" if not available else
@@ -1679,6 +1999,8 @@ class MainWindow(QMainWindow):
     def _refresh_toggle_labels(self):
         active = self.engine.ripples_enabled
         self.toggle_button.setText("暂停灯效" if active else "继续灯效")
+        self.toggle_button.setIcon(control_icon(
+            "pause" if active else "play", "#1B2615"))
         if hasattr(self, "tray_toggle_action"):
             self.tray_toggle_action.setText("暂停灯效" if active else "继续灯效")
 
@@ -1836,7 +2158,7 @@ class MainWindow(QMainWindow):
             open_now = category == self.gallery_category
             button = self.category_buttons[category]
             button.setChecked(open_now)
-            button.setIcon(chevron_icon(up=open_now))
+            button.setIcon(control_icon(category, "#C4EF70" if open_now else "#AEBCAA"))
             self.category_panels[category].setVisible(open_now)
         audio_visible = (self.gallery_category == "music" or
                          self.engine.effect == "custom_ecg")
@@ -2207,7 +2529,8 @@ class MainWindow(QMainWindow):
         self.color_error.clear()
         self.color_editor.show()
         self.color_field.setFocus()
-        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(self.color_editor))
+        self._show_section(1)
+        QTimer.singleShot(0, lambda: self.color_scroll.ensureWidgetVisible(self.color_editor))
 
     def _set_picker_color(self, color, update_hex=True):
         if not color.isValid():
@@ -2227,6 +2550,7 @@ class MainWindow(QMainWindow):
                 "border-radius: 25px;")
         finally:
             self._picker_sync = False
+        self._mark_hex_invalid(False)
         self.color_error.clear()
         self._preview_color(color)
 
@@ -2253,8 +2577,17 @@ class MainWindow(QMainWindow):
             self._set_picker_color(QColor(value), update_hex=False)
         elif len(value) == 7:
             self.color_error.setText("颜色代码应为 #RRGGBB")
+            self._mark_hex_invalid(True)
         else:
             self.color_error.clear()
+            self._mark_hex_invalid(False)
+
+    def _mark_hex_invalid(self, invalid):
+        if self.hex_input.property("invalid") == invalid:
+            return
+        self.hex_input.setProperty("invalid", invalid)
+        self.hex_input.style().unpolish(self.hex_input)
+        self.hex_input.style().polish(self.hex_input)
 
     def _cancel_color_editor(self):
         if self.editing_original is not None:
@@ -2267,6 +2600,7 @@ class MainWindow(QMainWindow):
         self.editing_color = None
         self.color_editor.hide()
         self.color_error.clear()
+        self._mark_hex_invalid(False)
 
     def _apply_color(self):
         if not self.editing_color:
@@ -2274,11 +2608,13 @@ class MainWindow(QMainWindow):
         value = self.hex_input.text().strip().upper()
         if len(value) != 7 or not value.startswith("#"):
             self.color_error.setText("请输入 #RRGGBB")
+            self._mark_hex_invalid(True)
             return
         try:
             color = tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
         except ValueError:
             self.color_error.setText("颜色代码无效")
+            self._mark_hex_invalid(True)
             return
         setattr(self.engine, self.editing_color, color)
         self._detach_active_preset()
@@ -2371,7 +2707,8 @@ def run(preview=False):
     app.setOrganizationName("老必灯")
     app.setWindowIcon(QIcon(str(ICON)))
     app.setStyle("Fusion")
-    app.setFont(QFont("Microsoft YaHei UI", 10))
+    load_ui_font()
+    app.setFont(QFont(ui_font(), 10))
     app.setStyleSheet((ROOT / "ui.qss").read_text(encoding="utf-8"))
     app.setQuitOnLastWindowClosed(False)
     autostart = "--autostart" in sys.argv and not preview

@@ -15,6 +15,8 @@ $compilerExe = if ($innoInstall) {
 }
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Python environment is missing.' }
 if (-not (Test-Path -LiteralPath $compilerExe)) { throw 'Inno Setup 6 is missing.' }
+& $pythonExe 'assets\build_icon.py'
+if ($LASTEXITCODE -ne 0) { throw 'Could not build application icons.' }
 & $pythonExe 'assets\build_installer_art.py'
 if ($LASTEXITCODE -ne 0) { throw 'Could not build installer art.' }
 $pyinstallerArgs = @(
@@ -24,6 +26,7 @@ $pyinstallerArgs = @(
   '--add-data', 'assets\ripple.ico;assets',
   '--add-data', 'assets\ripple.png;assets',
   '--add-data', 'assets\ripple.svg;assets',
+  '--add-data', 'assets\fonts;assets\fonts',
   '--add-data', 'third_party;third_party', 'main.py'
 )
 & $pythonExe @pyinstallerArgs
@@ -36,5 +39,5 @@ if (Test-Path -LiteralPath $shadowIcu) {
 }
 & $compilerExe 'installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
-Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.3.6.exe') |
+Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.4.0.exe') |
   Select-Object FullName, Length, LastWriteTime

@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget,
@@ -174,6 +174,7 @@ class LayoutCanvas(QWidget):
         self.photo = QPixmap(str(photo)) if photo else QPixmap()
         self.caps = list(caps)
         self.selected = -1
+        self.hovered = -1
         self.drag_mode = None
         self.drag_start = None
         self.original = None
@@ -182,14 +183,22 @@ class LayoutCanvas(QWidget):
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#141915"))
+        frame = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        path = QPainterPath()
+        path.addRoundedRect(frame, 16, 16)
+        painter.fillPath(path, QColor("#1D241E"))
         if not self.photo.isNull():
+            painter.setClipPath(path)
             painter.drawPixmap(self.rect(), self.photo)
+            painter.setClipping(False)
         for index, cap in enumerate(self.caps):
             selected = index == self.selected
-            painter.setPen(QPen(QColor("#D8FB9A" if selected else "#C4EF70"),
-                                2 if selected else 1.2))
-            painter.setBrush(QColor(196, 239, 112, 76 if selected else 34))
+            hovered = index == self.hovered
+            painter.setPen(QPen(QColor("#E5FFBA" if selected else
+                                       "#C4EF70" if hovered else "#91B869"),
+                                2 if selected or hovered else 1.2))
+            painter.setBrush(QColor(196, 239, 112, 76 if selected else
+                                    48 if hovered else 27))
             painter.drawRoundedRect(QRectF(cap.x, cap.y, cap.w, cap.h), 5, 5)
             painter.setPen(QColor("#FFFFFF"))
             painter.drawText(QRectF(cap.x + 2, cap.y + 1, cap.w - 4, cap.h - 2),
@@ -197,6 +206,9 @@ class LayoutCanvas(QWidget):
             if selected:
                 painter.fillRect(QRectF(cap.x + cap.w - 9, cap.y + cap.h - 9, 9, 9),
                                  QColor("#D8FB9A"))
+        painter.setPen(QPen(QColor("#455645"), 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(frame, 16, 16)
         painter.end()
 
     def _set_selected(self, index):
@@ -217,12 +229,30 @@ class LayoutCanvas(QWidget):
                 self.original = cap
                 self.drag_mode = ("resize" if point.x() > cap.x + cap.w - 12 and
                                   point.y() > cap.y + cap.h - 12 else "move")
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor if
+                               self.drag_mode == "resize" else
+                               Qt.CursorShape.ClosedHandCursor)
                 return
         self.drag_mode = "draw"
         self._set_selected(-1)
 
     def mouseMoveEvent(self, event):
         if self.drag_mode is None or self.drag_start is None:
+            point = event.position()
+            hovered = next((index for index in range(len(self.caps) - 1, -1, -1)
+                            if QRectF(self.caps[index].x, self.caps[index].y,
+                                      self.caps[index].w, self.caps[index].h).contains(point)),
+                           -1)
+            if hovered != self.hovered:
+                self.hovered = hovered
+                self.update()
+            if hovered >= 0:
+                cap = self.caps[hovered]
+                resize = point.x() > cap.x + cap.w - 12 and point.y() > cap.y + cap.h - 12
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor if resize else
+                               Qt.CursorShape.OpenHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor)
             return
         x, y = event.position().x(), event.position().y()
         sx, sy = self.drag_start
@@ -256,14 +286,22 @@ class LayoutCanvas(QWidget):
                 self._set_selected(len(self.caps) - 1)
         self.drag_mode = None
         self.drag_start = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor if self.hovered >= 0 else
+                       Qt.CursorShape.CrossCursor)
         self.update()
+
+    def leaveEvent(self, event):
+        self.hovered = -1
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+        super().leaveEvent(event)
 
 
 class PhotoLayoutEditor(QDialog):
     def __init__(self, photo, caps=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("老必灯 · 本地键位绘制")
-        self.setFixedSize(930, 600)
+        self.setFixedSize(930, 655)
         self.await_binding = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(22, 20, 22, 20)
@@ -278,6 +316,10 @@ class PhotoLayoutEditor(QDialog):
         self.canvas.selection_changed = self._selection_changed
         outer.addWidget(self.canvas, alignment=Qt.AlignmentFlag.AlignHCenter)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(9)
+        layout_caption = QLabel("布局")
+        layout_caption.setObjectName("muted")
+        toolbar.addWidget(layout_caption)
         self.template = QComboBox()
         self.template.addItems(("V98 Pro", "104 键", "87 键", "61 键"))
         toolbar.addWidget(self.template)
@@ -290,26 +332,32 @@ class PhotoLayoutEditor(QDialog):
         snap_button.setToolTip("在初始布局附近寻找键帽边缘；斜拍和特殊键位仍需手动校准")
         snap_button.clicked.connect(self._snap_to_photo)
         toolbar.addWidget(snap_button)
-        toolbar.addSpacing(12)
+        toolbar.addStretch()
+        outer.addLayout(toolbar)
+        key_row = QHBoxLayout()
+        key_row.setSpacing(9)
+        key_caption = QLabel("当前键位")
+        key_caption.setObjectName("muted")
+        key_row.addWidget(key_caption)
         self.name = QLineEdit()
         self.name.setPlaceholderText("按键名称，如 A")
         self.name.setMaxLength(40)
         self.name.editingFinished.connect(self._rename_selected)
-        toolbar.addWidget(self.name, 1)
+        key_row.addWidget(self.name, 1)
         self.label = QLineEdit()
         self.label.setPlaceholderText("键帽显示文字")
         self.label.setMaxLength(20)
         self.label.editingFinished.connect(self._rename_selected)
-        toolbar.addWidget(self.label, 1)
+        key_row.addWidget(self.label, 1)
         self.bind_button = QPushButton("按键绑定")
         self.bind_button.setObjectName("secondary")
         self.bind_button.clicked.connect(self._begin_binding)
-        toolbar.addWidget(self.bind_button)
+        key_row.addWidget(self.bind_button)
         delete_button = QPushButton("删除键位")
         delete_button.setObjectName("quiet")
         delete_button.clicked.connect(self._delete_selected)
-        toolbar.addWidget(delete_button)
-        outer.addLayout(toolbar)
+        key_row.addWidget(delete_button)
+        outer.addLayout(key_row)
         actions = QHBoxLayout()
         actions.addStretch()
         cancel = QPushButton("取消")
@@ -321,6 +369,8 @@ class PhotoLayoutEditor(QDialog):
         save.clicked.connect(self._accept_layout)
         actions.addWidget(save)
         outer.addLayout(actions)
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _selection_changed(self, index):
         cap = self.canvas.caps[index] if index >= 0 else None
@@ -483,6 +533,8 @@ class DeviceSetupDialog(QDialog):
         save.clicked.connect(self._save)
         actions.addWidget(save)
         body.addLayout(actions)
+        for button in self.findChildren(QPushButton):
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scan_devices(auto_fill=not bool(current))
 
     def _scan_devices(self, auto_fill=False):

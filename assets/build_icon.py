@@ -1,33 +1,40 @@
-"""Generate Windows and Tk icon assets from the simple ripple geometry."""
+"""Build the compact key-and-light identity for window, tray and installer."""
 
+import sys
 from pathlib import Path
-from PIL import Image, ImageDraw
+
+from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QApplication
 
 
-ROOT = Path(__file__).resolve().parent
-SCALE = 4
-SIZE = 512
-image = Image.new("RGBA", (SIZE * SCALE, SIZE * SCALE), (0, 0, 0, 0))
-draw = ImageDraw.Draw(image)
-
-
-def box(rect):
-    return tuple(round(value * SCALE) for value in rect)
-
-
-draw.rounded_rectangle(box((8, 8, 504, 504)), radius=116 * SCALE,
-                       fill="#202720")
-for radius, width, color in ((190, 22, "#657D4B"),
-                             (137, 24, "#9BC85F"),
-                             (84, 24, "#D9F7A9")):
-    draw.ellipse(box((256 - radius, 256 - radius,
-                      256 + radius, 256 + radius)),
-                 outline=color, width=width * SCALE)
-draw.rounded_rectangle(box((218, 218, 294, 294)), radius=19 * SCALE,
-                       fill="#C4EF70")
-
-image = image.resize((SIZE, SIZE), Image.Resampling.LANCZOS)
-image.save(ROOT / "ripple.png")
-image.save(ROOT / "ripple.ico", sizes=[(16, 16), (24, 24), (32, 32),
-                                      (48, 48), (64, 64), (128, 128),
-                                      (256, 256)])
+app = QApplication(sys.argv)
+root = Path(__file__).resolve().parent
+canvas = QPixmap(512, 512)
+canvas.fill(Qt.GlobalColor.transparent)
+painter = QPainter(canvas)
+painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+painter.setPen(Qt.PenStyle.NoPen)
+painter.setBrush(QColor("#202720"))
+painter.drawRoundedRect(QRectF(8, 8, 496, 496), 116, 116)
+for color, width, points in (
+    ("#6A8B51", 17, ((287, 94), (431, 147), (431, 365), (287, 418))),
+    ("#AAD77A", 20, ((259, 160), (343, 190), (343, 322), (259, 352))),
+):
+    path = QPainterPath()
+    path.moveTo(*points[0])
+    path.cubicTo(*points[1], *points[2], *points[3])
+    pen = QPen(QColor(color), width)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawPath(path)
+painter.setPen(Qt.PenStyle.NoPen)
+painter.setBrush(QColor("#C4EF70"))
+painter.drawRoundedRect(QRectF(147, 193, 126, 126), 33, 33)
+painter.setBrush(QColor("#E8F9CD"))
+painter.drawRoundedRect(QRectF(165, 208, 90, 18), 9, 9)
+painter.end()
+canvas.save(str(root / "ripple.png"))
+canvas.scaled(256, 256, Qt.AspectRatioMode.IgnoreAspectRatio,
+              Qt.TransformationMode.SmoothTransformation).save(str(root / "ripple.ico"))
