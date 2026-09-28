@@ -815,7 +815,9 @@ class KeyboardPreview(QWidget):
     def __init__(self, engine, parent=None):
         super().__init__(parent)
         self.engine = engine
-        self.setMinimumHeight(275)
+        # The 790 x 270 keyboard should fit at native scale in the gallery.
+        # Shrinking it to 80% made the key legends visibly stair-stepped.
+        self.setMinimumHeight(340)
         self.setAccessibleName("键盘灯效预览")
         self.setMouseTracking(True)
         self._brush = None
@@ -3009,7 +3011,10 @@ def show_existing_instance():
 def run(preview=False):
     if sys.platform != "win32":
         raise SystemExit("老必灯目前只支持 Windows。")
-    app = QApplication(sys.argv)
+    # DirectWrite's LCD subpixel rendering puts red/blue fringes around text
+    # in our translucent frameless window. FreeType uses grayscale coverage.
+    qt_args = [sys.argv[0], "-platform", "windows:fontengine=freetype", *sys.argv[1:]]
+    app = QApplication(qt_args)
     app.setApplicationName("老必灯")
     app.setOrganizationName("老必灯")
     app.setWindowIcon(QIcon(str(ICON)))
