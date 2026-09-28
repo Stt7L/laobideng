@@ -176,6 +176,21 @@ QPushButton#palettePair:hover { background: #304034; border-color: #849974; }
 QPushButton#palettePair:pressed { background: #202B24; }
 QPushButton#palettePair:checked { background: #34472E; border-color: #C4EF70; color: #ECF8D8; }
 QPushButton#palettePair:focus { border-color: #E0FFA4; }
+QPushButton#pairingMood {
+    color: #C4D0BF;
+    background: #263027;
+    border: 1px solid #465647;
+    border-radius: 10px;
+    padding: 7px 10px;
+    min-height: 25px;
+    font-weight: 600;
+}
+QPushButton#pairingMood:hover { background: #354137; }
+QPushButton#pairingMood:checked {
+    color: #ECF8D8;
+    background: #34472E;
+    border-color: #C4EF70;
+}
 QLabel#pickerValue { color: #F1F8E9; font-size: 16px; font-weight: 700; }
 QSpinBox#colorChannel {
     color: #EFF3E9;

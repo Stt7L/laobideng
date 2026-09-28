@@ -8,7 +8,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from effects import EFFECT_IDS, MUSIC, REACTIVE, render, ripple_lifetime, reactive_lifetime
+from effects import EFFECT_IDS, MUSIC, MOVING_MUSIC, REACTIVE, render, ripple_lifetime, reactive_lifetime
 from audio_spectrum import AudioSpectrum
 from layout import NAME_CENTERS, NAME_LEDS
 
@@ -613,7 +613,7 @@ class LightingController:
                         ecg_background=self.ecg_background)
         # Moving one-key-wide graphics must clear their previous positions in
         # the same frame; the shared music decay otherwise paints a wide trail.
-        if self.effect not in MUSIC or self.effect in {"audio_ecg", "custom_ecg"}:
+        if self.effect not in MUSIC or self.effect in {"audio_ecg", "custom_ecg"} | MOVING_MUSIC:
             return target
         if self.music_frame is None or len(self.music_frame) != len(target):
             self.music_frame = target

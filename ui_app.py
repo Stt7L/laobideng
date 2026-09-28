@@ -38,15 +38,32 @@ SERVER_NAME = "vgn-ripple-v98pro-320f-5055"
 PROJECT_URL = "https://github.com/Stt7L/laobideng"
 LOG = logging.getLogger("vgn-ripple")
 
+PAIRING_MOODS = ("清新", "暖调", "霓虹", "柔和")
 COLOR_PAIRINGS = (
-    ("青柠石墨", (196, 239, 112), (42, 61, 50)),
-    ("海盐晚霞", (96, 201, 211), (245, 151, 142)),
-    ("月光暗涟", (187, 214, 245), (20, 36, 54)),
-    ("极夜琥珀", (57, 112, 174), (255, 184, 96)),
-    ("薄荷樱云", (141, 224, 193), (244, 159, 191)),
-    ("蜜桃海岸", (255, 172, 143), (110, 195, 228)),
-    ("紫雾电光", (171, 149, 232), (111, 219, 225)),
-    ("暖白青影", (229, 234, 220), (64, 164, 148)),
+    ("清新", "青柠珊瑚", (196, 239, 112), (255, 130, 112)),
+    ("清新", "海盐晚霞", (96, 201, 211), (245, 151, 142)),
+    ("清新", "薄荷樱云", (141, 224, 193), (244, 159, 191)),
+    ("清新", "雾蓝杏光", (131, 189, 227), (255, 196, 139)),
+    ("清新", "柚子苏打", (255, 205, 97), (106, 213, 189)),
+    ("清新", "冰川桃粉", (111, 216, 238), (250, 148, 185)),
+    ("暖调", "赤陶奶油", (227, 125, 103), (255, 220, 158)),
+    ("暖调", "日落金橘", (255, 114, 107), (255, 195, 91)),
+    ("暖调", "琥珀孔雀", (255, 177, 75), (86, 190, 179)),
+    ("暖调", "樱桃奶昔", (223, 90, 137), (255, 191, 173)),
+    ("暖调", "金麦紫霞", (250, 195, 99), (168, 138, 220)),
+    ("暖调", "烟粉香槟", (221, 151, 163), (246, 213, 158)),
+    ("霓虹", "电光莓紫", (190, 77, 247), (255, 100, 177)),
+    ("霓虹", "霓虹海浪", (49, 218, 227), (119, 111, 255)),
+    ("霓虹", "激光日落", (255, 88, 150), (255, 180, 66)),
+    ("霓虹", "电音酸橙", (176, 255, 62), (90, 126, 255)),
+    ("霓虹", "蓝焰玫红", (71, 159, 255), (255, 72, 145)),
+    ("霓虹", "紫电冰蓝", (155, 102, 255), (73, 227, 255)),
+    ("柔和", "月光薰衣草", (193, 211, 245), (193, 161, 229)),
+    ("柔和", "岩盐浅海", (229, 202, 194), (116, 198, 204)),
+    ("柔和", "杏仁蓝莓", (242, 207, 160), (152, 162, 226)),
+    ("柔和", "雾松蜜桃", (137, 191, 165), (245, 178, 150)),
+    ("柔和", "晨雾玫瑰", (202, 215, 226), (233, 148, 174)),
+    ("柔和", "甜橙牛奶", (250, 189, 127), (244, 220, 190)),
 )
 
 
@@ -863,23 +880,47 @@ class MainWindow(QMainWindow):
         self.inspiration_note.setObjectName("muted")
         inspiration_header.addWidget(self.inspiration_note)
         colors_layout.addLayout(inspiration_header)
-        pairing_grid = QGridLayout()
-        pairing_grid.setSpacing(8)
+        mood_row = QHBoxLayout()
+        mood_row.setSpacing(8)
+        self.pairing_mood_buttons = {}
+        self.pairing_panels = {}
+        self.pairing_mood = PAIRING_MOODS[0]
+        for mood in PAIRING_MOODS:
+            mood_button = QPushButton(mood)
+            mood_button.setObjectName("pairingMood")
+            mood_button.setCheckable(True)
+            mood_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            mood_button.clicked.connect(lambda _checked=False, chosen=mood:
+                                        self._show_pairing_mood(chosen))
+            mood_row.addWidget(mood_button, 1)
+            self.pairing_mood_buttons[mood] = mood_button
+        colors_layout.addLayout(mood_row)
         self.pairing_buttons = []
-        for index, (name, base, accent) in enumerate(COLOR_PAIRINGS):
-            button = QPushButton(name)
-            button.setObjectName("palettePair")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setIcon(pair_swatch_icon(base, accent))
-            button.setIconSize(QSize(48, 28))
-            button.setToolTip(f"{name} · {color_hex(base)} + {color_hex(accent)}")
-            button.setAccessibleName(f"套用{name}配色")
-            button.clicked.connect(lambda _checked=False, choice=index:
-                                   self._apply_color_pairing(choice))
-            pairing_grid.addWidget(button, index // 4, index % 4)
-            self.pairing_buttons.append(button)
-        colors_layout.addLayout(pairing_grid)
+        for mood in PAIRING_MOODS:
+            panel = QWidget()
+            pairing_grid = QGridLayout(panel)
+            pairing_grid.setContentsMargins(0, 0, 0, 0)
+            pairing_grid.setSpacing(8)
+            position = 0
+            for index, (group, name, base, accent) in enumerate(COLOR_PAIRINGS):
+                if group != mood:
+                    continue
+                button = QPushButton(name)
+                button.setObjectName("palettePair")
+                button.setCheckable(True)
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
+                button.setIcon(pair_swatch_icon(base, accent))
+                button.setIconSize(QSize(48, 28))
+                button.setToolTip(f"{name} · {color_hex(base)} + {color_hex(accent)}")
+                button.setAccessibleName(f"套用{name}配色")
+                button.clicked.connect(lambda _checked=False, choice=index:
+                                       self._apply_color_pairing(choice))
+                pairing_grid.addWidget(button, position // 3, position % 3)
+                self.pairing_buttons.append((index, button))
+                position += 1
+            colors_layout.addWidget(panel)
+            self.pairing_panels[mood] = panel
+        self._show_pairing_mood(self.pairing_mood)
         global_row = QHBoxLayout()
         global_row.setSpacing(12)
         self.global_button = QPushButton()
@@ -1176,7 +1217,7 @@ class MainWindow(QMainWindow):
         action_card, action_layout = self._card("快速控制")
         action_layout.addLayout(action_grid)
         layout.addWidget(action_card)
-        hint = QLabel("关闭窗口后灯效继续运行。右击托盘图标可退出程序。请勿同时打开 VHUB。")
+        hint = QLabel("关闭窗口后灯效继续运行。右击托盘图标可退出程序。请勿让其他灯控软件同时控制同一键盘。")
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -1926,13 +1967,20 @@ class MainWindow(QMainWindow):
             "第二色会作为背景" if self.engine.effect == "audio_ecg"
             else "全键常亮只使用第一色" if self.engine.effect == "solid"
             else "点一下，直接套用")
-        for button, (_, base, accent) in zip(self.pairing_buttons, COLOR_PAIRINGS):
+        for index, button in self.pairing_buttons:
+            _, _, base, accent = COLOR_PAIRINGS[index]
             second = (self.engine.ecg_background if self.engine.effect == "audio_ecg"
                       else self.engine.accent)
             button.setChecked(self.engine.base == base and second == accent)
 
+    def _show_pairing_mood(self, mood):
+        self.pairing_mood = mood
+        for name, button in self.pairing_mood_buttons.items():
+            button.setChecked(name == mood)
+            self.pairing_panels[name].setVisible(name == mood)
+
     def _apply_color_pairing(self, index):
-        name, base, accent = COLOR_PAIRINGS[index]
+        _, name, base, accent = COLOR_PAIRINGS[index]
         self._cancel_color_editor()
         self._detach_active_preset()
         self.engine.base = base
