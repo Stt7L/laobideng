@@ -13,12 +13,12 @@ import winreg
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QTimer, QSize, QRectF, QPointF, QStandardPaths, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QSize, QRect, QRectF, QPointF, QPoint, QStandardPaths, QUrl, Signal, QEasingCurve, QPropertyAnimation, QVariantAnimation
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QFontInfo, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
-    QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QComboBox, QDialog, QFileDialog, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
@@ -73,6 +73,99 @@ def ui_display_font(size=10, weight=QFont.Weight.Normal):
                           QFont.StyleStrategy.NoSubpixelAntialias)
     font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
     return font
+
+
+def keyboard_cap_color(values):
+    intensity = max(values) / 255
+    alpha = 0.88 * intensity
+    return QColor(*(round(224 * (1 - alpha) + value * alpha)
+                    for value in values))
+
+
+def blend_color(start, end, fraction):
+    a, b = QColor(start), QColor(end)
+    return QColor(*(round(getattr(a, channel)() * (1 - fraction) +
+                          getattr(b, channel)() * fraction)
+                    for channel in ("red", "green", "blue", "alpha")))
+
+
+class ControlMotion(QObject):
+    """Small, consistent hover and focus lift for standard controls."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._motions = {}
+
+    def eventFilter(self, watched, event):
+        if not isinstance(watched, (QPushButton, QLineEdit, QComboBox)) or \
+                isinstance(watched, (EffectChoiceButton, SwitchButton)):
+            return False
+        if event.type() in (QEvent.Type.Enter, QEvent.Type.FocusIn):
+            self._animate(watched, 1.0)
+        elif event.type() in (QEvent.Type.Leave, QEvent.Type.FocusOut):
+            if not watched.underMouse() and not watched.hasFocus():
+                self._animate(watched, 0.0)
+        elif event.type() == QEvent.Type.MouseButtonPress:
+            self._animate(watched, 0.35)
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            self._animate(watched, 1.0 if watched.underMouse() else 0.0)
+        return False
+
+    def _animate(self, widget, target):
+        if not widget.isEnabled():
+            return
+        state = self._motions.get(widget)
+        if state is None:
+            shadow = QGraphicsDropShadowEffect(widget)
+            shadow.setBlurRadius(0)
+            shadow.setOffset(0, 0)
+            shadow.setColor(QColor(0, 0, 0, 0))
+            widget.setGraphicsEffect(shadow)
+            motion = QVariantAnimation(widget)
+            motion.setDuration(170)
+            motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+            state = [shadow, motion, 0.0]
+            self._motions[widget] = state
+
+            def frame(value, current=state):
+                level = float(value)
+                current[2] = level
+                current[0].setBlurRadius(13 * level)
+                current[0].setOffset(0, 2 * level)
+                current[0].setColor(QColor(0, 0, 0, round(25 * level)))
+
+            motion.valueChanged.connect(frame)
+        shadow, motion, level = state
+        motion.stop()
+        motion.setStartValue(level)
+        motion.setEndValue(target)
+        motion.start()
+
+
+class PopoverDismissFilter(QObject):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.owner = owner
+
+    def eventFilter(self, watched, event):
+        panel = getattr(self.owner, "quick_panel", None)
+        try:
+            visible = panel is not None and panel.isVisible()
+        except RuntimeError:
+            return False
+        if not visible:
+            return False
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            panel.hide()
+            self.owner.quick_button.setChecked(False)
+            return True
+        if event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
+            button = self.owner.quick_button
+            if (watched is not button and not button.isAncestorOf(watched) and
+                    watched is not panel and not panel.isAncestorOf(watched)):
+                panel.hide()
+                button.setChecked(False)
+        return False
 
 PAIRING_MOODS = ("清新", "暖调", "霓虹", "柔和", "撞色", "复古", "自然")
 COLOR_PAIRINGS = (
@@ -368,15 +461,53 @@ class EffectChoiceButton(QPushButton):
         self.title = title
         self.description = description
         self.setCheckable(True)
-        self.setMinimumHeight(76)
+        self.setMinimumHeight(68)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._hover_level = 0.0
+        self._selected_level = 0.0
+        self._hover_motion = QVariantAnimation(self)
+        self._hover_motion.setDuration(170)
+        self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_motion.valueChanged.connect(self._set_hover_level)
+        self._selection_motion = QVariantAnimation(self)
+        self._selection_motion.setDuration(220)
+        self._selection_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._selection_motion.valueChanged.connect(self._set_selected_level)
+        self.toggled.connect(self._animate_selection)
+
+    def _set_hover_level(self, value):
+        self._hover_level = float(value)
+        self.update()
+
+    def _set_selected_level(self, value):
+        self._selected_level = float(value)
+        self.update()
+
+    def _animate_selection(self, selected):
+        self._selection_motion.stop()
+        self._selection_motion.setStartValue(self._selected_level)
+        self._selection_motion.setEndValue(1.0 if selected else 0.0)
+        self._selection_motion.start()
+
+    def enterEvent(self, event):
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(1.0)
+        self._hover_motion.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(0.0)
+        self._hover_motion.start()
+        super().leaveEvent(event)
 
     def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHints(QPainter.RenderHint.Antialiasing |
                                QPainter.RenderHint.TextAntialiasing)
         checked = self.isChecked()
-        hovered = self.underMouse()
         pressed = self.isDown()
         if not self.isEnabled():
             background, border, title_color, detail_color = (
@@ -384,20 +515,19 @@ class EffectChoiceButton(QPushButton):
         elif pressed:
             background, border, title_color, detail_color = (
                 "#EFEFF0", "#727276", "#1D1D1F", "#6D6D70")
-        elif checked:
-            background, border, title_color, detail_color = (
-                "#FFFFFF", "#1D1D1F", "#1D1D1F", "#69696C")
-        elif hovered:
-            background, border, title_color, detail_color = (
-                "#FFFFFF", "#C8C8CA", "#1D1D1F", "#66666A")
         else:
-            background, border, title_color, detail_color = (
-                "#FAFAFA", "#E9E9EB", "#252527", "#77777B")
+            background = blend_color("#FAFAFA", "#FFFFFF", self._hover_level)
+            border = blend_color("#E9E9EB", "#C8C8CA", self._hover_level)
+            border = blend_color(border, "#1D1D1F", self._selected_level)
+            title_color = blend_color("#252527", "#1D1D1F",
+                                      max(self._hover_level, self._selected_level))
+            detail_color = blend_color("#77777B", "#69696C",
+                                       max(self._hover_level, self._selected_level))
         rect = QRectF(1, 1 + (1 if pressed else 0),
                       self.width() - 2, self.height() - 3)
         painter.setBrush(QColor(background))
-        painter.setPen(QPen(QColor(border), 1.5 if checked else 1))
-        painter.drawRoundedRect(rect, 14, 14)
+        painter.setPen(QPen(QColor(border), 1 + 0.5 * self._selected_level))
+        painter.drawRoundedRect(rect, 12, 12)
         if self.hasFocus():
             painter.setPen(QPen(QColor("#888888"), 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -406,7 +536,7 @@ class EffectChoiceButton(QPushButton):
         painter.setFont(title_font)
         painter.setPen(QColor(title_color))
         title_width = max(20, self.width() - (48 if checked else 28))
-        painter.drawText(QRectF(16, 13, title_width, 23),
+        painter.drawText(QRectF(16, 10, title_width, 22),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(
                              self.title, Qt.TextElideMode.ElideRight,
@@ -415,7 +545,7 @@ class EffectChoiceButton(QPushButton):
         painter.setFont(detail_font)
         painter.setPen(QColor(detail_color))
         detail_width = max(20, self.width() - 28)
-        painter.drawText(QRectF(16, 42, detail_width, 22),
+        painter.drawText(QRectF(16, 34, detail_width, 21),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(
                              self.description, Qt.TextElideMode.ElideRight,
@@ -423,12 +553,12 @@ class EffectChoiceButton(QPushButton):
         if checked:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor("#1D1D1F"))
-            painter.drawEllipse(QPointF(self.width() - 21, 24), 8, 8)
+            painter.drawEllipse(QPointF(self.width() - 21, 22), 8, 8)
             painter.setPen(QPen(QColor("#FFFFFF"), 1.5))
-            painter.drawLine(QPointF(self.width() - 24, 24),
-                             QPointF(self.width() - 21, 27))
-            painter.drawLine(QPointF(self.width() - 21, 27),
-                             QPointF(self.width() - 17, 21))
+            painter.drawLine(QPointF(self.width() - 24, 22),
+                             QPointF(self.width() - 21, 25))
+            painter.drawLine(QPointF(self.width() - 21, 25),
+                             QPointF(self.width() - 17, 19))
         painter.end()
 
 
@@ -440,6 +570,45 @@ class SwitchButton(QPushButton):
         self.setCheckable(True)
         self.setMinimumHeight(48)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._switch_level = 0.0
+        self._hover_level = 0.0
+        self._switch_motion = QVariantAnimation(self)
+        self._switch_motion.setDuration(190)
+        self._switch_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._switch_motion.valueChanged.connect(self._set_switch_level)
+        self._hover_motion = QVariantAnimation(self)
+        self._hover_motion.setDuration(170)
+        self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_motion.valueChanged.connect(self._set_hover_level)
+        self.toggled.connect(self._animate_switch)
+
+    def _set_switch_level(self, value):
+        self._switch_level = float(value)
+        self.update()
+
+    def _set_hover_level(self, value):
+        self._hover_level = float(value)
+        self.update()
+
+    def _animate_switch(self, selected):
+        self._switch_motion.stop()
+        self._switch_motion.setStartValue(self._switch_level)
+        self._switch_motion.setEndValue(1.0 if selected else 0.0)
+        self._switch_motion.start()
+
+    def enterEvent(self, event):
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(1.0)
+        self._hover_motion.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(0.0)
+        self._hover_motion.start()
+        super().leaveEvent(event)
 
     def paintEvent(self, _event):
         painter = QPainter(self)
@@ -447,9 +616,9 @@ class SwitchButton(QPushButton):
                                QPainter.RenderHint.TextAntialiasing)
         enabled = self.isEnabled()
         checked = self.isChecked()
-        hovered = self.underMouse() and enabled
         pressed = self.isDown() and enabled
-        background = "#EAEAEA" if pressed else "#F4F4F5" if hovered else "#FAFAFA"
+        background = (QColor("#EAEAEA") if pressed else
+                      blend_color("#FAFAFA", "#F4F4F5", self._hover_level))
         border = "#777777" if self.hasFocus() else background
         painter.setBrush(QColor(background if enabled else "#F3F3F3"))
         painter.setPen(QPen(QColor(border), 1))
@@ -461,9 +630,10 @@ class SwitchButton(QPushButton):
                          Qt.AlignmentFlag.AlignVCenter, self.text())
         track = QRectF(self.width() - 65, (self.height() - 26) / 2, 48, 26)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#171717" if checked and enabled else "#D5D5D5"))
+        painter.setBrush(blend_color("#D5D5D5", "#171717",
+                                     self._switch_level if enabled else 0))
         painter.drawRoundedRect(track, 13, 13)
-        thumb_x = track.right() - 13 if checked else track.left() + 13
+        thumb_x = track.left() + 13 + self._switch_level * (track.width() - 26)
         painter.setBrush(QColor("#FFFFFF" if enabled else "#F4F4F4"))
         painter.drawEllipse(QPointF(thumb_x, track.center().y() + (1 if pressed else 0)),
                             9 if pressed else 10, 9 if pressed else 10)
@@ -488,6 +658,7 @@ class FineSlider(QSlider):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMouseTracking(True)
         self._hovered = False
+        self._hover_level = 0.0
         self._visual_fraction = 0.0
         self._snap_values = []
         self._active_snap = None
@@ -495,6 +666,14 @@ class FineSlider(QSlider):
         self._motion_timer.setInterval(16)
         self._motion_timer.timeout.connect(self._advance_visual)
         self.valueChanged.connect(self._animate_to_value)
+        self._hover_motion = QVariantAnimation(self)
+        self._hover_motion.setDuration(165)
+        self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_motion.valueChanged.connect(self._set_hover_level)
+
+    def _set_hover_level(self, value):
+        self._hover_level = float(value)
+        self.update()
 
     def setSnapValues(self, values):
         self._snap_values = sorted({max(self.minimum(), min(self.maximum(),
@@ -508,7 +687,11 @@ class FineSlider(QSlider):
         return self.EDGE + fraction * max(1, self.width() - self.EDGE * 2)
 
     def _animate_to_value(self, _value):
-        self._motion_timer.start()
+        if self.isSliderDown():
+            self._visual_fraction = self._fraction()
+            self._motion_timer.stop()
+        else:
+            self._motion_timer.start()
         self.update()
 
     def _advance_visual(self):
@@ -536,18 +719,22 @@ class FineSlider(QSlider):
         fill = QRectF(4, center_y - 5, max(0, x - 4), 10)
         painter.setBrush(QColor("#303030" if self.isSliderDown() else "#151515"))
         painter.drawRoundedRect(fill, 5, 5)
-        show_marks = self._hovered or self.isSliderDown() or self.hasFocus()
-        if show_marks:
+        mark_opacity = 1.0 if self.isSliderDown() or self.hasFocus() else self._hover_level
+        if mark_opacity > 0.01:
             for mark in self._snap_values:
                 fraction = (mark - self.minimum()) / max(1, self.maximum() - self.minimum())
                 dot_x = self._position(fraction)
                 active = mark == self._active_snap and self.isSliderDown()
-                painter.setBrush(QColor("#FFFFFF" if active else "#AFAFAF"))
+                mark_color = QColor("#FFFFFF" if active else "#AFAFAF")
+                mark_color.setAlphaF(mark_opacity)
+                painter.setBrush(mark_color)
                 diameter = 4.5 if active else 2.8
                 painter.drawEllipse(QPointF(dot_x, center_y), diameter, diameter)
-        if self.isSliderDown() or self._hovered:
-            painter.setBrush(QColor(22, 22, 22, 27 if self.isSliderDown() else 14))
-            painter.drawEllipse(QPointF(x, center_y), 16, 16)
+        halo_opacity = 1.0 if self.isSliderDown() else self._hover_level
+        if halo_opacity > 0.01:
+            painter.setBrush(QColor(22, 22, 22, round(27 * halo_opacity)))
+            painter.drawEllipse(QPointF(x, center_y), 13 + 3 * halo_opacity,
+                                13 + 3 * halo_opacity)
         thumb_radius = 10 if self.isSliderDown() else 11
         painter.setBrush(QColor(0, 0, 0, 42))
         painter.drawEllipse(QPointF(x, center_y + 2), thumb_radius + 1, thumb_radius + 1)
@@ -560,7 +747,7 @@ class FineSlider(QSlider):
             painter.drawEllipse(QPointF(x, center_y), thumb_radius + 3, thumb_radius + 3)
         painter.end()
 
-    def _set_from_pointer(self, x):
+    def _set_from_pointer(self, x, settle=False):
         width = max(1, self.width() - self.EDGE * 2)
         fraction = min(1.0, max(0.0, (x - self.EDGE) / width))
         raw = self.minimum() + fraction * (self.maximum() - self.minimum())
@@ -569,7 +756,10 @@ class FineSlider(QSlider):
             nearest = min(self._snap_values, key=lambda mark: abs(mark - raw))
             distance = abs(self._position((nearest - self.minimum()) /
                                           max(1, self.maximum() - self.minimum())) - x)
-            if distance <= 8:
+            if distance <= 11:
+                pull = 0.72 * (1 - distance / 11) ** 2
+                raw = raw * (1 - pull) + nearest * pull
+            if distance <= 2.5 or (settle and distance <= 7):
                 raw = nearest
                 self._active_snap = nearest
         self.setValue(round(raw))
@@ -596,7 +786,7 @@ class FineSlider(QSlider):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.isSliderDown():
-            self._set_from_pointer(event.position().x())
+            self._set_from_pointer(event.position().x(), settle=True)
             self.setSliderDown(False)
             self._active_snap = None
             self._motion_timer.start()
@@ -606,12 +796,18 @@ class FineSlider(QSlider):
 
     def enterEvent(self, event):
         self._hovered = True
-        self.update()
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(1.0)
+        self._hover_motion.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hovered = False
-        self.update()
+        self._hover_motion.stop()
+        self._hover_motion.setStartValue(self._hover_level)
+        self._hover_motion.setEndValue(0.0)
+        self._hover_motion.start()
         super().leaveEvent(event)
 
     def focusInEvent(self, event):
@@ -920,8 +1116,11 @@ class KeyboardPreview(QWidget):
         painter.save()
         painter.translate(x0, y0)
         painter.scale(scale, scale)
-        painter.setPen(QPen(QColor("#DDDDDD"), 1))
-        painter.setBrush(QColor("#1F1F21"))
+        painter.setPen(QPen(QColor("#CBCBCD"), 1))
+        keyboard_surface = QLinearGradient(0, 0, 0, 270)
+        keyboard_surface.setColorAt(0, QColor("#FAFAF9"))
+        keyboard_surface.setColorAt(1, QColor("#E9E9E8"))
+        painter.setBrush(keyboard_surface)
         painter.drawRoundedRect(QRectF(0, 0, 790, 270), 18, 18)
         frame = self.engine.preview_frame()
         label_font = ui_display_font()
@@ -932,23 +1131,18 @@ class KeyboardPreview(QWidget):
             cx, cy, cw, ch = cap.x - 48, cap.y - 43, cap.w, cap.h
             colors = [frame[led] for led in cap.leds if led < len(frame)]
             rgb = tuple(round(sum(color[i] for color in colors) / len(colors))
-                        for i in range(3)) if colors else (36, 43, 37)
-            lit = QColor(*rgb)
-            light_share = 0.86 if self.engine.effect in ("audio_ecg", "custom_ecg",
-                                                         "custom_canvas",
-                                                         "custom_sparkle") else 0.62
-            surface = QColor(*(round(28 * (1 - light_share) + c * light_share)
-                               for c in rgb))
-            painter.setPen(QPen(QColor("#FFFFFF") if self._editable() and
-                                cap.name == self._hover_key else lit.lighter(125),
-                                2 if self._editable() and cap.name == self._hover_key
-                                else 1.2))
+                        for i in range(3)) if colors else (0, 0, 0)
+            # The keyboard has translucent light keycaps over a white case.
+            # A dark preview base suppressed colors that remain visible in hand.
+            surface = keyboard_cap_color(rgb)
+            hovered = self._editable() and cap.name == self._hover_key
+            painter.setPen(QPen(QColor("#222224") if hovered else
+                                QColor("#C7C7C9"), 2 if hovered else 1))
             key_rect = QRectF(cx, cy, cw, ch)
             led_segments = sorted((LED_CENTERS[led][0], frame[led])
                                   for led in cap.leds
                                   if led in LED_CENTERS and led < len(frame))
-            if (cap.name not in ("Space", "Enter", "Num Enter") and
-                    len(led_segments) > 1 and
+            if (len(led_segments) > 1 and
                     led_segments[-1][0] - led_segments[0][0] > 5):
                 clip = QPainterPath()
                 clip.addRoundedRect(key_rect, 5, 5)
@@ -959,9 +1153,7 @@ class KeyboardPreview(QWidget):
                           for i in range(len(led_segments) - 1)] +
                          [cx + cw])
                 for index, (_, segment_rgb) in enumerate(led_segments):
-                    segment_color = QColor(*(
-                        round(28 * (1 - light_share) + c * light_share)
-                        for c in segment_rgb))
+                    segment_color = keyboard_cap_color(segment_rgb)
                     painter.fillRect(QRectF(edges[index], cy,
                                             edges[index + 1] - edges[index], ch),
                                      segment_color)
@@ -970,8 +1162,9 @@ class KeyboardPreview(QWidget):
             else:
                 painter.setBrush(surface)
             painter.drawRoundedRect(key_rect, 5, 5)
-            light = sum(rgb) / 3
-            painter.setPen(QColor("#1D1D1D") if light > 118 else QColor("#F3F3F3"))
+            light = (surface.red() * 0.3 + surface.green() * 0.59 +
+                     surface.blue() * 0.11)
+            painter.setPen(QColor("#1D1D1D") if light > 115 else QColor("#F9F9F9"))
             painter.drawText(QRectF(cx + 2, cy + 1, cw - 4, ch - 2),
                              Qt.AlignmentFlag.AlignCenter, cap.label)
         painter.restore()
@@ -1060,6 +1253,11 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"老必灯 · {self.profile['model'] if self.profile else '键盘灯效工作室'}")
         self.setWindowIcon(QIcon(str(ICON)))
+        self._shadowed_surfaces = []
+        self._resize_idle_timer = QTimer(self)
+        self._resize_idle_timer.setSingleShot(True)
+        self._resize_idle_timer.setInterval(170)
+        self._resize_idle_timer.timeout.connect(self._finish_resize)
         self.setMinimumSize(960, 650)
         available = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1500, available.width() - 80),
@@ -1069,6 +1267,8 @@ class MainWindow(QMainWindow):
         self.save_timer.setInterval(350)
         self.save_timer.timeout.connect(self._save_settings)
         self._build_ui()
+        self._popover_filter = PopoverDismissFilter(self)
+        QApplication.instance().installEventFilter(self._popover_filter)
         QApplication.instance().applicationStateChanged.connect(self._application_state_changed)
         self.cancel_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self.cancel_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
@@ -1169,6 +1369,12 @@ class MainWindow(QMainWindow):
         sidebar.setObjectName("sidebar")
         sidebar.installEventFilter(self)
         self._sidebar = sidebar
+        sidebar_shadow = QGraphicsDropShadowEffect(sidebar)
+        sidebar_shadow.setBlurRadius(24)
+        sidebar_shadow.setOffset(0, 3)
+        sidebar_shadow.setColor(QColor(0, 0, 0, 17))
+        sidebar.setGraphicsEffect(sidebar_shadow)
+        self._shadowed_surfaces.append(sidebar_shadow)
         sidebar.setFixedWidth(210)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(17, 29, 17, 18)
@@ -1208,12 +1414,21 @@ class MainWindow(QMainWindow):
             side.addWidget(button)
             self.nav_buttons.append(button)
         side.addStretch()
+        self.quick_button = QPushButton("快捷控制")
+        self.quick_button.setObjectName("sideNav")
+        self.quick_button.setCheckable(True)
+        self.quick_button.setIcon(control_icon("power"))
+        self.quick_button.setIconSize(QSize(17, 17))
+        self.quick_button.setAccessibleName("展开快捷控制")
+        self.quick_button.clicked.connect(self._toggle_quick_panel)
+        side.addWidget(self.quick_button)
+        side.addSpacing(10)
         side_rule = QFrame()
         side_rule.setObjectName("sideRule")
         side_rule.setFixedHeight(1)
         side.addWidget(side_rule)
         side.addSpacing(11)
-        side_footer = QLabel("Stt7L")
+        side_footer = QLabel("灯效自定义工作台")
         side_footer.setObjectName("hint")
         side.addWidget(side_footer)
         outer.addWidget(sidebar)
@@ -1367,8 +1582,8 @@ class MainWindow(QMainWindow):
             panel = QWidget()
             grid = QGridLayout(panel)
             grid.setContentsMargins(0, 0, 0, 0)
-            grid.setHorizontalSpacing(12)
-            grid.setVerticalSpacing(12)
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(10)
             self.category_panels[category] = panel
             category_grids[category] = grid
             effects_layout.addWidget(panel)
@@ -1781,15 +1996,27 @@ class MainWindow(QMainWindow):
         exit_button.setCursor(Qt.CursorShape.PointingHandCursor)
         exit_button.clicked.connect(self.exit_app)
         action_grid.addWidget(exit_button, 0, 2)
-        action_card, action_layout = self._card("快速控制")
-        action_layout.addLayout(action_grid)
-        layout.addWidget(action_card,
-                         alignment=Qt.AlignmentFlag.AlignHCenter)
-        hint = QLabel("关闭窗口后灯效继续运行。右击托盘图标可退出程序。请勿让其他灯控软件同时控制同一键盘。")
-        hint.setObjectName("hint")
-        hint.setWordWrap(True)
-        hint.setMaximumWidth(1000)
-        layout.addWidget(hint, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.quick_panel = QFrame(shell)
+        self.quick_panel.setObjectName("quickPanel")
+        self.quick_panel.setFixedWidth(330)
+        quick_layout = QVBoxLayout(self.quick_panel)
+        quick_layout.setContentsMargins(18, 18, 18, 17)
+        quick_layout.setSpacing(12)
+        quick_title = QLabel("快捷控制")
+        quick_title.setObjectName("sectionTitle")
+        quick_layout.addWidget(quick_title)
+        quick_layout.addLayout(action_grid)
+        quick_hint = QLabel("关闭窗口后灯效继续运行。请避免其他灯控软件同时控制同一键盘。")
+        quick_hint.setObjectName("hint")
+        quick_hint.setWordWrap(True)
+        quick_layout.addWidget(quick_hint)
+        quick_shadow = QGraphicsDropShadowEffect(self.quick_panel)
+        quick_shadow.setBlurRadius(30)
+        quick_shadow.setOffset(0, 7)
+        quick_shadow.setColor(QColor(0, 0, 0, 38))
+        self.quick_panel.setGraphicsEffect(quick_shadow)
+        self._shadowed_surfaces.append(quick_shadow)
+        self.quick_panel.hide()
         layout.addStretch()
 
         device_card, device_layout = self._card("我的键盘")
@@ -1891,7 +2118,6 @@ class MainWindow(QMainWindow):
             (self.preview, self.scroll, 1000),
             (self.custom_editor_card, self.scroll, 1000),
             (effects_card, self.scroll, 1000),
-            (action_card, self.scroll, 1000),
             (colors_card, self.color_scroll, 1080),
             (settings_card, self.tuning_scroll, 1020),
             (presets_card, self.presets_scroll, 960),
@@ -1908,12 +2134,57 @@ class MainWindow(QMainWindow):
         for card, scroll, limit in self._centered_cards:
             available = scroll.viewport().width() - 56
             if available > 0:
-                card.setFixedWidth(min(limit, available))
+                target = min(limit, available)
+                if card.width() != target:
+                    card.setFixedWidth(target)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._last_resize_at = time.monotonic()
+        if self.isVisible() and hasattr(self, "_resize_idle_timer"):
+            if not self._resize_idle_timer.isActive():
+                for effect in self._shadowed_surfaces:
+                    effect.setEnabled(False)
+            self._resize_idle_timer.start()
         if hasattr(self, "_centered_cards"):
             self._size_centered_cards()
+        if getattr(self, "quick_panel", None) is not None and self.quick_panel.isVisible():
+            self._position_quick_panel()
+
+    def _finish_resize(self):
+        for effect in self._shadowed_surfaces:
+            effect.setEnabled(True)
+        if self.page_stack.currentIndex() == 0:
+            self.preview.update()
+
+    def _position_quick_panel(self):
+        panel = self.quick_panel
+        panel.adjustSize()
+        button_pos = self.quick_button.mapTo(self._window_shell, QPoint(0, 0))
+        sidebar_pos = self._sidebar.mapTo(self._window_shell, QPoint(0, 0))
+        x = sidebar_pos.x() + self._sidebar.width() + 12
+        y = min(button_pos.y() + self.quick_button.height() - panel.height(),
+                self._window_shell.height() - panel.height() - 14)
+        panel.move(x, max(14, y))
+
+    def _toggle_quick_panel(self):
+        if self.quick_panel.isVisible():
+            self.quick_panel.hide()
+            self.quick_button.setChecked(False)
+            return
+        self.quick_panel.show()
+        self.quick_panel.raise_()
+        self._position_quick_panel()
+        end = self.quick_panel.geometry()
+        start = QRect(end)
+        start.translate(-12, 0)
+        self._quick_motion = QPropertyAnimation(self.quick_panel, b"geometry", self)
+        self._quick_motion.setDuration(190)
+        self._quick_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._quick_motion.setStartValue(start)
+        self._quick_motion.setEndValue(end)
+        self._quick_motion.start()
+        self.quick_button.setChecked(True)
 
     def _resize_edges(self, position):
         if self.isMaximized():
@@ -2000,13 +2271,37 @@ class MainWindow(QMainWindow):
             ("我的预设", "保存并复用你的灯光方案"),
             ("设备与设置", "键盘、连接方式与后台运行"),
         )
+        previous = self.page_stack.currentIndex()
         self.page_stack.setCurrentIndex(index)
+        if previous != index and self.isVisible():
+            self._fade_in(self.page_stack.currentWidget(), 210)
+        if self.quick_panel.isVisible():
+            self.quick_panel.hide()
+            self.quick_button.setChecked(False)
         self._size_centered_cards()
         QTimer.singleShot(0, self._size_centered_cards)
         self.workspace_title.setText(section_titles[index][0])
         self.workspace_subtitle.setText(section_titles[index][1])
         for page, button in enumerate(self.nav_buttons):
             button.setChecked(page == index)
+
+    def _fade_in(self, widget, duration):
+        effect = QGraphicsOpacityEffect(widget)
+        effect.setOpacity(0.45)
+        widget.setGraphicsEffect(effect)
+        motion = QPropertyAnimation(effect, b"opacity", self)
+        motion.setDuration(duration)
+        motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+        motion.setStartValue(0.45)
+        motion.setEndValue(1.0)
+
+        def finish():
+            if widget.graphicsEffect() is effect:
+                widget.setGraphicsEffect(None)
+            motion.deleteLater()
+
+        motion.finished.connect(finish)
+        motion.start()
 
     def _show_settings_panel(self, selected):
         for index, panel in enumerate(self.settings_panels):
@@ -2016,6 +2311,12 @@ class MainWindow(QMainWindow):
     def _card(self, title):
         card = QFrame()
         card.setObjectName("surface")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(25)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 16))
+        card.setGraphicsEffect(shadow)
+        self._shadowed_surfaces.append(shadow)
         content = QVBoxLayout(card)
         content.setContentsMargins(29, 25, 29, 29)
         content.setSpacing(18)
@@ -2130,12 +2431,17 @@ class MainWindow(QMainWindow):
                                                    ctypes.c_void_p, ctypes.c_uint]
             dwm.DwmSetWindowAttribute(
                 hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
-            corner = ctypes.c_int(2)
+            # Qt already paints the rounded translucent shell. DWM's second
+            # rounded mask left a pale crescent at the top-left corner.
+            corner = ctypes.c_int(1)
             dwm.DwmSetWindowAttribute(
                 hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
             no_border = ctypes.c_uint(0xFFFFFFFE)
             dwm.DwmSetWindowAttribute(
                 hwnd, 34, ctypes.byref(no_border), ctypes.sizeof(no_border))
+            alpha = ctypes.c_int(1)
+            dwm.DwmSetWindowAttribute(
+                hwnd, 39, ctypes.byref(alpha), ctypes.sizeof(alpha))
         except (AttributeError, OSError):
             pass
 
@@ -2257,15 +2563,19 @@ class MainWindow(QMainWindow):
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
                      lit_keys, self.engine.ripples_enabled)
-        self.preview.update()
+        if (self.page_stack.currentIndex() == 0 and
+                time.monotonic() - getattr(self, "_last_resize_at", 0) > 0.12):
+            self.preview.update()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
-            self.music_status.setText(
+            music_text = (
                 "播放设备已接入 · 低频 / 中频 / 高频实时响应 · 不保存声音"
                 if meter.mode == "spectrum" else
                 "仅音量响应 · 频段分析正在连接" if meter.available else
                 "等待默认播放设备的声音；请播放音乐后查看灯光变化" if not meter.error else
                 f"音频暂不可用：{meter.error}")
+            if self.music_status.text() != music_text:
+                self.music_status.setText(music_text)
 
     def _set_status(self, text, kind):
         self.status.setText(text)
@@ -2479,8 +2789,11 @@ class MainWindow(QMainWindow):
         self.music_status.setText("正在连接系统默认播放设备…")
 
     def _toggle_category(self, category):
+        previous = self.gallery_category
         self.gallery_category = None if self.gallery_category == category else category
         self._refresh_gallery()
+        if self.gallery_category is not None and self.gallery_category != previous:
+            self._fade_in(self.category_panels[self.gallery_category], 190)
         self._save_settings()
 
     def _update_palette_hint(self):
@@ -2752,8 +3065,9 @@ class MainWindow(QMainWindow):
         self.accent_brightness_value.setValue(accent_brightness / 10)
         self.speed_value.setValue(speed / 1000)
         self.ripple_width_value.setValue(ripple_width / 10)
-        self.engine.last_frame = self.engine.frame(time.perf_counter())
-        self.preview.update()
+        if self.preview_mode:
+            self.engine.last_frame = self.engine.frame(time.perf_counter())
+            self.preview.update()
         if not self.preview_mode:
             self.save_timer.start()
 
@@ -3022,6 +3336,8 @@ def run(preview=False):
     load_ui_font()
     app.setFont(ui_display_font(10))
     app.setStyleSheet((ROOT / "ui.qss").read_text(encoding="utf-8"))
+    app._control_motion = ControlMotion(app)
+    app.installEventFilter(app._control_motion)
     LOG.info("Active UI font: %s", QFontInfo(app.font()).family())
     app.setQuitOnLastWindowClosed(False)
     autostart = "--autostart" in sys.argv and not preview
