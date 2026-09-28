@@ -1,6 +1,6 @@
 /* Quiet desktop workspace, with color reserved for the keyboard light itself. */
 QWidget { font-family: "HarmonyOS Sans SC"; font-size: 15px; font-weight: 400; color: #1D1D1F; }
-QMainWindow, QWidget#windowRoot { background: transparent; }
+QMainWindow, QWidget#windowRoot { background: #F6F6F6; }
 QDialog, QWidget#root { background: #F6F6F6; }
 QFrame#windowShell { background: #F6F6F6; border: none; border-radius: 24px; }
 QFrame#windowShell[maximized="true"] { border: none; border-radius: 0; }

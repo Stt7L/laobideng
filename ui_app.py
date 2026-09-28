@@ -13,12 +13,12 @@ import winreg
 import zipfile
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QSize, QRect, QRectF, QPointF, QPoint, QStandardPaths, QUrl, Signal, QEasingCurve, QPropertyAnimation, QVariantAnimation
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QSize, QRect, QRectF, QPointF, QPoint, QSignalBlocker, QStandardPaths, QUrl, Signal, QEasingCurve, QPropertyAnimation, QVariantAnimation
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QFontInfo, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
-    QComboBox, QDialog, QFileDialog, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QComboBox, QDialog, QFileDialog, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
@@ -76,10 +76,16 @@ def ui_display_font(size=10, weight=QFont.Weight.Normal):
 
 
 def keyboard_cap_color(values):
-    intensity = max(values) / 255
-    alpha = 0.88 * intensity
-    return QColor(*(round(224 * (1 - alpha) + value * alpha)
-                    for value in values))
+    peak = max(values)
+    if peak <= 0:
+        return QColor(244, 243, 241)
+    # Clear caps on a light keyboard retain the LED hue even at low output.
+    # Mixing the raw dim RGB into gray made every low-brightness effect look off.
+    strength = 0.86 * (peak / 255) ** 0.55
+    base = (244, 243, 241)
+    return QColor(*(round(base[index] * (1 - strength) +
+                          values[index] * 255 / peak * strength)
+                    for index in range(3)))
 
 
 def blend_color(start, end, fraction):
@@ -87,59 +93,6 @@ def blend_color(start, end, fraction):
     return QColor(*(round(getattr(a, channel)() * (1 - fraction) +
                           getattr(b, channel)() * fraction)
                     for channel in ("red", "green", "blue", "alpha")))
-
-
-class ControlMotion(QObject):
-    """Small, consistent hover and focus lift for standard controls."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._motions = {}
-
-    def eventFilter(self, watched, event):
-        if not isinstance(watched, (QPushButton, QLineEdit, QComboBox)) or \
-                isinstance(watched, (EffectChoiceButton, SwitchButton)):
-            return False
-        if event.type() in (QEvent.Type.Enter, QEvent.Type.FocusIn):
-            self._animate(watched, 1.0)
-        elif event.type() in (QEvent.Type.Leave, QEvent.Type.FocusOut):
-            if not watched.underMouse() and not watched.hasFocus():
-                self._animate(watched, 0.0)
-        elif event.type() == QEvent.Type.MouseButtonPress:
-            self._animate(watched, 0.35)
-        elif event.type() == QEvent.Type.MouseButtonRelease:
-            self._animate(watched, 1.0 if watched.underMouse() else 0.0)
-        return False
-
-    def _animate(self, widget, target):
-        if not widget.isEnabled():
-            return
-        state = self._motions.get(widget)
-        if state is None:
-            shadow = QGraphicsDropShadowEffect(widget)
-            shadow.setBlurRadius(0)
-            shadow.setOffset(0, 0)
-            shadow.setColor(QColor(0, 0, 0, 0))
-            widget.setGraphicsEffect(shadow)
-            motion = QVariantAnimation(widget)
-            motion.setDuration(170)
-            motion.setEasingCurve(QEasingCurve.Type.OutCubic)
-            state = [shadow, motion, 0.0]
-            self._motions[widget] = state
-
-            def frame(value, current=state):
-                level = float(value)
-                current[2] = level
-                current[0].setBlurRadius(13 * level)
-                current[0].setOffset(0, 2 * level)
-                current[0].setColor(QColor(0, 0, 0, round(25 * level)))
-
-            motion.valueChanged.connect(frame)
-        shadow, motion, level = state
-        motion.stop()
-        motion.setStartValue(level)
-        motion.setEndValue(target)
-        motion.start()
 
 
 class PopoverDismissFilter(QObject):
@@ -526,12 +479,9 @@ class EffectChoiceButton(QPushButton):
         rect = QRectF(1, 1 + (1 if pressed else 0),
                       self.width() - 2, self.height() - 3)
         painter.setBrush(QColor(background))
-        painter.setPen(QPen(QColor(border), 1 + 0.5 * self._selected_level))
+        focus_border = blend_color(border, "#555558", 0.6) if self.hasFocus() else QColor(border)
+        painter.setPen(QPen(focus_border, 1 + 0.5 * self._selected_level))
         painter.drawRoundedRect(rect, 12, 12)
-        if self.hasFocus():
-            painter.setPen(QPen(QColor("#888888"), 1.5))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), 10, 10)
         title_font = ui_display_font(11, QFont.Weight.Medium)
         painter.setFont(title_font)
         painter.setPen(QColor(title_color))
@@ -756,12 +706,11 @@ class FineSlider(QSlider):
             nearest = min(self._snap_values, key=lambda mark: abs(mark - raw))
             distance = abs(self._position((nearest - self.minimum()) /
                                           max(1, self.maximum() - self.minimum())) - x)
-            if distance <= 11:
+            if settle and distance <= 11:
                 pull = 0.72 * (1 - distance / 11) ** 2
                 raw = raw * (1 - pull) + nearest * pull
-            if distance <= 2.5 or (settle and distance <= 7):
+            if settle and distance <= 7:
                 raw = nearest
-                self._active_snap = nearest
         self.setValue(round(raw))
         self.update()
 
@@ -1144,21 +1093,15 @@ class KeyboardPreview(QWidget):
                                   if led in LED_CENTERS and led < len(frame))
             if (len(led_segments) > 1 and
                     led_segments[-1][0] - led_segments[0][0] > 5):
-                clip = QPainterPath()
-                clip.addRoundedRect(key_rect, 5, 5)
-                painter.save()
-                painter.setClipPath(clip)
-                edges = ([cx] +
-                         [(led_segments[i][0] + led_segments[i + 1][0]) / 2 - 48
-                          for i in range(len(led_segments) - 1)] +
-                         [cx + cw])
-                for index, (_, segment_rgb) in enumerate(led_segments):
-                    segment_color = keyboard_cap_color(segment_rgb)
-                    painter.fillRect(QRectF(edges[index], cy,
-                                            edges[index + 1] - edges[index], ch),
-                                     segment_color)
-                painter.restore()
-                painter.setBrush(Qt.BrushStyle.NoBrush)
+                # A long key remains one cap. Its LEDs blend inside the same
+                # rounded outline instead of showing hard internal partitions.
+                gradient = QLinearGradient(cx, cy, cx + cw, cy)
+                gradient.setColorAt(0, keyboard_cap_color(led_segments[0][1]))
+                for led_x, segment_rgb in led_segments:
+                    stop = min(1.0, max(0.0, (led_x - 48 - cx) / cw))
+                    gradient.setColorAt(stop, keyboard_cap_color(segment_rgb))
+                gradient.setColorAt(1, keyboard_cap_color(led_segments[-1][1]))
+                painter.setBrush(gradient)
             else:
                 painter.setBrush(surface)
             painter.drawRoundedRect(key_rect, 5, 5)
@@ -1175,7 +1118,6 @@ class MainWindow(QMainWindow):
     def __init__(self, preview=False):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.preview_mode = preview
         self.exiting = False
         self.last_connection_error = None
@@ -1369,12 +1311,6 @@ class MainWindow(QMainWindow):
         sidebar.setObjectName("sidebar")
         sidebar.installEventFilter(self)
         self._sidebar = sidebar
-        sidebar_shadow = QGraphicsDropShadowEffect(sidebar)
-        sidebar_shadow.setBlurRadius(24)
-        sidebar_shadow.setOffset(0, 3)
-        sidebar_shadow.setColor(QColor(0, 0, 0, 17))
-        sidebar.setGraphicsEffect(sidebar_shadow)
-        self._shadowed_surfaces.append(sidebar_shadow)
         sidebar.setFixedWidth(210)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(17, 29, 17, 18)
@@ -2271,10 +2207,7 @@ class MainWindow(QMainWindow):
             ("我的预设", "保存并复用你的灯光方案"),
             ("设备与设置", "键盘、连接方式与后台运行"),
         )
-        previous = self.page_stack.currentIndex()
         self.page_stack.setCurrentIndex(index)
-        if previous != index and self.isVisible():
-            self._fade_in(self.page_stack.currentWidget(), 210)
         if self.quick_panel.isVisible():
             self.quick_panel.hide()
             self.quick_button.setChecked(False)
@@ -2284,24 +2217,6 @@ class MainWindow(QMainWindow):
         self.workspace_subtitle.setText(section_titles[index][1])
         for page, button in enumerate(self.nav_buttons):
             button.setChecked(page == index)
-
-    def _fade_in(self, widget, duration):
-        effect = QGraphicsOpacityEffect(widget)
-        effect.setOpacity(0.45)
-        widget.setGraphicsEffect(effect)
-        motion = QPropertyAnimation(effect, b"opacity", self)
-        motion.setDuration(duration)
-        motion.setEasingCurve(QEasingCurve.Type.OutCubic)
-        motion.setStartValue(0.45)
-        motion.setEndValue(1.0)
-
-        def finish():
-            if widget.graphicsEffect() is effect:
-                widget.setGraphicsEffect(None)
-            motion.deleteLater()
-
-        motion.finished.connect(finish)
-        motion.start()
 
     def _show_settings_panel(self, selected):
         for index, panel in enumerate(self.settings_panels):
@@ -2425,23 +2340,30 @@ class MainWindow(QMainWindow):
     def _set_light_title_bar(self):
         try:
             hwnd = int(self.winId())
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+            user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                                 ctypes.c_ssize_t]
+            user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+            style = user32.GetWindowLongPtrW(hwnd, -16)
+            # Retain Qt's frameless client area, but give DWM a real frame to
+            # draw the outer shadow and rounded corners. An opaque surface also
+            # stops the desktop showing through during live resizing.
+            user32.SetWindowLongPtrW(hwnd, -16, style | 0x00040000 | 0x00C00000)
+            user32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0027)
             value = ctypes.c_int(0)
             dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
             dwm.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint,
                                                    ctypes.c_void_p, ctypes.c_uint]
             dwm.DwmSetWindowAttribute(
                 hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
-            # Qt already paints the rounded translucent shell. DWM's second
-            # rounded mask left a pale crescent at the top-left corner.
-            corner = ctypes.c_int(1)
+            corner = ctypes.c_int(2)
             dwm.DwmSetWindowAttribute(
                 hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
             no_border = ctypes.c_uint(0xFFFFFFFE)
             dwm.DwmSetWindowAttribute(
                 hwnd, 34, ctypes.byref(no_border), ctypes.sizeof(no_border))
-            alpha = ctypes.c_int(1)
-            dwm.DwmSetWindowAttribute(
-                hwnd, 39, ctypes.byref(alpha), ctypes.sizeof(alpha))
         except (AttributeError, OSError):
             pass
 
@@ -2789,11 +2711,8 @@ class MainWindow(QMainWindow):
         self.music_status.setText("正在连接系统默认播放设备…")
 
     def _toggle_category(self, category):
-        previous = self.gallery_category
         self.gallery_category = None if self.gallery_category == category else category
         self._refresh_gallery()
-        if self.gallery_category is not None and self.gallery_category != previous:
-            self._fade_in(self.category_panels[self.gallery_category], 190)
         self._save_settings()
 
     def _update_palette_hint(self):
@@ -3060,11 +2979,14 @@ class MainWindow(QMainWindow):
         self.engine.accent_brightness = accent_brightness / 1000
         self.engine.speed = speed / 1000
         self.engine.ripple_width = ripple_width / 1000
-        self.brightness_value.setValue(brightness / 10)
-        self.base_brightness_value.setValue(base_brightness / 10)
-        self.accent_brightness_value.setValue(accent_brightness / 10)
-        self.speed_value.setValue(speed / 1000)
-        self.ripple_width_value.setValue(ripple_width / 10)
+        for display, value in (
+                (self.brightness_value, brightness / 10),
+                (self.base_brightness_value, base_brightness / 10),
+                (self.accent_brightness_value, accent_brightness / 10),
+                (self.speed_value, speed / 1000),
+                (self.ripple_width_value, ripple_width / 10)):
+            with QSignalBlocker(display):
+                display.setValue(value)
         if self.preview_mode:
             self.engine.last_frame = self.engine.frame(time.perf_counter())
             self.preview.update()
@@ -3336,8 +3258,6 @@ def run(preview=False):
     load_ui_font()
     app.setFont(ui_display_font(10))
     app.setStyleSheet((ROOT / "ui.qss").read_text(encoding="utf-8"))
-    app._control_motion = ControlMotion(app)
-    app.installEventFilter(app._control_motion)
     LOG.info("Active UI font: %s", QFontInfo(app.font()).family())
     app.setQuitOnLastWindowClosed(False)
     autostart = "--autostart" in sys.argv and not preview
