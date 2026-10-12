@@ -2,11 +2,9 @@
 
 import math
 import logging
+import os
 import threading
 import time
-
-import numpy as np
-import soundcard as sc
 
 from audio_meter import AudioMeter
 
@@ -14,11 +12,26 @@ from audio_meter import AudioMeter
 SAMPLE_RATE = 48_000
 FFT_SIZE = 2048
 BANDS = ((35, 180), (180, 2000), (2000, 8500))
-FREQUENCIES = np.fft.rfftfreq(FFT_SIZE, 1 / SAMPLE_RATE)
-WINDOW = np.hanning(FFT_SIZE).astype(np.float32)
-BAND_MASKS = tuple((FREQUENCIES >= low) & (FREQUENCIES < high)
-                   for low, high in BANDS)
 LOG = logging.getLogger("vgn-ripple.audio")
+
+
+def fast_bass_energy(mono, low, sub, powers, np):
+    """Same streaming two-pole filter, evaluated in bounded vector blocks.
+
+    powers are capped at 1024 samples, keeping the exponential recurrence
+    numerically stable even when the recorder returns a long audio block.
+    """
+    low_alpha, sub_alpha, low_powers, sub_powers = powers
+    energy = 0.0
+    for start in range(0, len(mono), len(low_powers)):
+        chunk = np.asarray(mono[start:start + len(low_powers)], dtype=np.float64)
+        lp, sp = low_powers[:len(chunk)], sub_powers[:len(chunk)]
+        lows = lp * (low + np.cumsum(low_alpha * chunk / lp))
+        subs = sp * (sub + np.cumsum(sub_alpha * lows / sp))
+        filtered = lows - subs
+        energy += float(np.dot(filtered, filtered))
+        low, sub = float(lows[-1]), float(subs[-1])
+    return energy, low, sub
 
 
 class AudioSpectrum:
@@ -58,6 +71,20 @@ class AudioSpectrum:
 
     def _capture(self, stop):
         try:
+            # Neither matrix algebra nor a BLAS thread pool is needed here.
+            # Load the analysis stack only when a music effect actually starts,
+            # on this worker thread, rather than delaying the window's startup.
+            os.environ["OPENBLAS_NUM_THREADS"] = "1"
+            import numpy as np
+            import soundcard as sc
+
+            if stop.is_set():
+                return
+
+            frequencies = np.fft.rfftfreq(FFT_SIZE, 1 / SAMPLE_RATE)
+            window = np.hanning(FFT_SIZE).astype(np.float32)
+            band_masks = tuple((frequencies >= low) & (frequencies < high)
+                               for low, high in BANDS)
             speaker = sc.default_speaker()
             if speaker is None:
                 raise OSError("未找到默认播放设备")
@@ -77,12 +104,17 @@ class AudioSpectrum:
             beat_pulse = 0.0
             low_alpha = 2 * math.pi * 180 / (SAMPLE_RATE + 2 * math.pi * 180)
             sub_alpha = 2 * math.pi * 35 / (SAMPLE_RATE + 2 * math.pi * 35)
+            indices = np.arange(1, 1025, dtype=np.float64)
+            filter_powers = (low_alpha, sub_alpha, (1 - low_alpha) ** indices,
+                             (1 - sub_alpha) ** indices)
             last_beat = 0.0
             beat_serial = self.beat_serial
             level = 0.0
             impact_envelope = 0.0
             with loopback.recorder(samplerate=SAMPLE_RATE,
                                    blocksize=512) as recorder:
+                if stop.is_set():
+                    return
                 with self._lock:
                     self._connected = True
                     self.error = ""
@@ -100,12 +132,8 @@ class AudioSpectrum:
                     mono = np.asarray(data, dtype=np.float32).mean(axis=1)
                     # Detect the kick from the newest ~10 ms of audio. Waiting
                     # for the wider FFT window made the visible ring late.
-                    fast_energy = 0.0
-                    for value in mono:
-                        fast_low += low_alpha * (float(value) - fast_low)
-                        fast_sub += sub_alpha * (fast_low - fast_sub)
-                        filtered = fast_low - fast_sub
-                        fast_energy += filtered * filtered
+                    fast_energy, fast_low, fast_sub = fast_bass_energy(
+                        mono, fast_low, fast_sub, filter_powers, np)
                     fast_bass = math.sqrt(fast_energy / len(mono))
                     fast_impulse = max(0.0, (fast_bass - fast_average) /
                                        max(0.001, fast_average))
@@ -126,9 +154,9 @@ class AudioSpectrum:
                         count = len(mono)
                         samples[:-count] = samples[count:]
                         samples[-count:] = mono
-                    magnitudes = np.abs(np.fft.rfft(samples * WINDOW)) / (FFT_SIZE / 2)
+                    magnitudes = np.abs(np.fft.rfft(samples * window)) / (FFT_SIZE / 2)
                     raw_bands = [float(np.sqrt(np.mean(magnitudes[mask] ** 2)))
-                                 for mask in BAND_MASKS]
+                                 for mask in band_masks]
                     for index, raw in enumerate(raw_bands):
                         references[index] = max(raw, references[index] * 0.996)
                         target = min(1.0, raw / max(0.00035, references[index])) ** 1.7
@@ -166,7 +194,8 @@ class AudioSpectrum:
                     self.retry_after = time.perf_counter() + 5.0
         finally:
             with self._lock:
-                self._connected = False
+                if self._stop is stop:
+                    self._connected = False
 
     def sample(self):
         now = time.perf_counter()
@@ -200,7 +229,9 @@ class AudioSpectrum:
         if self._stop is not None:
             self._stop.set()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=0.6)
+            # The recorder is owned and released by its worker. Switching an
+            # effect must not block the interface for a 600 ms cleanup wait.
+            self._thread.join(timeout=0.02)
         self.fallback.close()
         self.mode = "peak"
         self.level = 0.0

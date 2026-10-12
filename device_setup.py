@@ -4,16 +4,19 @@ import re
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QEvent, QRectF
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import Qt, QEvent, QRectF, QSize
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QVBoxLayout, QWidget,
 )
 
 from layout import DEFAULT_KEYCAPS, Keycap
 from backend import VK_NAMES
 from device_detection import detect_keyboards
+from ui_controls import SurfaceButton as QPushButton
+from ui_dialogs import ModernDialog
+from ui_select import SurfaceComboBox
 
 
 CANVAS_WIDTH = 884
@@ -179,10 +182,20 @@ class LayoutCanvas(QWidget):
         self.drag_start = None
         self.original = None
         self.selection_changed = None
+        self.setAccessibleName("照片键位校准画布")
+        self.setAccessibleDescription("点选键位后拖动可移动，拖动右下角可调整大小；空白处拖动可新增键位。")
 
     def paintEvent(self, _event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing |
+                               QPainter.RenderHint.TextAntialiasing)
+        label_font = QFont(QApplication.font())
+        label_font.setPixelSize(12)
+        label_font.setWeight(QFont.Weight.Medium)
+        label_font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias |
+                                   QFont.StyleStrategy.NoSubpixelAntialias)
+        label_font.setHintingPreference(QFont.HintingPreference.PreferVerticalHinting)
+        painter.setFont(label_font)
         frame = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
         path = QPainterPath()
         path.addRoundedRect(frame, 16, 16)
@@ -201,8 +214,10 @@ class LayoutCanvas(QWidget):
                                     185 if hovered else 150))
             painter.drawRoundedRect(QRectF(cap.x, cap.y, cap.w, cap.h), 5, 5)
             painter.setPen(QColor("#111111"))
+            label = painter.fontMetrics().elidedText(
+                cap.label, Qt.TextElideMode.ElideRight, max(0, round(cap.w - 4)))
             painter.drawText(QRectF(cap.x + 2, cap.y + 1, cap.w - 4, cap.h - 2),
-                             Qt.AlignmentFlag.AlignCenter, cap.label)
+                             Qt.AlignmentFlag.AlignCenter, label)
             if selected:
                 painter.fillRect(QRectF(cap.x + cap.w - 9, cap.y + cap.h - 9, 9, 9),
                                  QColor("#111111"))
@@ -297,20 +312,16 @@ class LayoutCanvas(QWidget):
         super().leaveEvent(event)
 
 
-class PhotoLayoutEditor(QDialog):
+class PhotoLayoutEditor(ModernDialog):
     def __init__(self, photo, caps=None, parent=None):
-        super().__init__(parent)
+        super().__init__("在照片上校准键位", "调整布局，让屏幕预览贴合你的键盘", parent)
         self.setWindowTitle("老必灯 · 本地键位绘制")
-        self.setFixedSize(930, 655)
         self.await_binding = False
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(22, 20, 22, 20)
+        outer = self.content_layout
         outer.setSpacing(12)
-        heading = QLabel("在照片上校准键位")
-        heading.setObjectName("brandTitle")
-        outer.addWidget(heading)
         help_text = QLabel("拖动键帽可移动；拖动右下角可缩放；在空白处拖动可新增。选中后可修改名称，Delete 可删除。")
         help_text.setObjectName("hint")
+        help_text.setWordWrap(True)
         outer.addWidget(help_text)
         self.canvas = LayoutCanvas(photo, caps or list(DEFAULT_KEYCAPS))
         self.canvas.selection_changed = self._selection_changed
@@ -320,7 +331,7 @@ class PhotoLayoutEditor(QDialog):
         layout_caption = QLabel("布局")
         layout_caption.setObjectName("muted")
         toolbar.addWidget(layout_caption)
-        self.template = QComboBox()
+        self.template = SurfaceComboBox()
         self.template.addItems(("V98 Pro", "104 键", "87 键", "61 键"))
         toolbar.addWidget(self.template)
         template_button = QPushButton("套用初始布局")
@@ -358,7 +369,8 @@ class PhotoLayoutEditor(QDialog):
         delete_button.clicked.connect(self._delete_selected)
         key_row.addWidget(delete_button)
         outer.addLayout(key_row)
-        actions = QHBoxLayout()
+        outer.addStretch()
+        actions = self.actions
         actions.addStretch()
         cancel = QPushButton("取消")
         cancel.setObjectName("quiet")
@@ -366,11 +378,13 @@ class PhotoLayoutEditor(QDialog):
         actions.addWidget(cancel)
         save = QPushButton("保存键位布局")
         save.setObjectName("primary")
+        save.setMinimumWidth(132)
+        save.setDefault(True)
         save.clicked.connect(self._accept_layout)
         actions.addWidget(save)
-        outer.addLayout(actions)
         for button in self.findChildren(QPushButton):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fit_to_available(QSize(972, 700))
 
     def _selection_changed(self, index):
         cap = self.canvas.caps[index] if index >= 0 else None
@@ -421,7 +435,7 @@ class PhotoLayoutEditor(QDialog):
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched, event):
-        if self.await_binding and event.type() == QEvent.Type.KeyPress:
+        if getattr(self, "await_binding", False) and event.type() == QEvent.Type.KeyPress:
             vk = event.nativeVirtualKey()
             name = VK_NAMES.get(vk)
             if name is None and event.text().isprintable() and len(event.text()) == 1:
@@ -452,9 +466,9 @@ class PhotoLayoutEditor(QDialog):
             super().keyPressEvent(event)
 
 
-class DeviceSetupDialog(QDialog):
+class DeviceSetupDialog(ModernDialog):
     def __init__(self, data_dir, current=None, parent=None):
-        super().__init__(parent)
+        super().__init__("先认识你的键盘", "选择设备，然后确认型号与键位布局", parent)
         self.data_dir = Path(data_dir)
         self.current = current or {}
         self.photo_path = self.current.get("photo") or ""
@@ -462,19 +476,14 @@ class DeviceSetupDialog(QDialog):
         self.layout_edited = False
         self.result_profile = None
         self.setWindowTitle("老必灯 · 键盘设置")
-        self.setMinimumWidth(560)
-        body = QVBoxLayout(self)
-        body.setContentsMargins(26, 25, 26, 25)
+        body = self.content_layout
         body.setSpacing(14)
-        title = QLabel("先认识你的键盘")
-        title.setObjectName("brandTitle")
-        body.addWidget(title)
         intro = QLabel("自动读取已连接键盘的型号和设备编号。若设备只报告通用名称，可在下方修改。")
         intro.setWordWrap(True)
         intro.setObjectName("hint")
         body.addWidget(intro)
         scan_row = QHBoxLayout()
-        self.detected = QComboBox()
+        self.detected = SurfaceComboBox()
         self.detected.setAccessibleName("已识别的键盘")
         self.detected.activated.connect(self._device_selected)
         scan_row.addWidget(self.detected, 1)
@@ -507,6 +516,7 @@ class DeviceSetupDialog(QDialog):
         photo_row = QHBoxLayout()
         self.photo_label = QLabel(Path(self.photo_path).name if self.photo_path else "尚未选择照片")
         self.photo_label.setObjectName("muted")
+        self.photo_label.setWordWrap(True)
         choose = QPushButton("选择键盘照片")
         choose.setObjectName("secondary")
         choose.clicked.connect(self._choose_photo)
@@ -521,7 +531,8 @@ class DeviceSetupDialog(QDialog):
         note.setObjectName("hint")
         note.setWordWrap(True)
         body.addWidget(note)
-        actions = QHBoxLayout()
+        body.addStretch()
+        actions = self.actions
         actions.addStretch()
         if current:
             cancel = QPushButton("取消")
@@ -530,12 +541,14 @@ class DeviceSetupDialog(QDialog):
             actions.addWidget(cancel)
         save = QPushButton("保存并继续")
         save.setObjectName("primary")
+        save.setMinimumWidth(132)
+        save.setDefault(True)
         save.clicked.connect(self._save)
         actions.addWidget(save)
-        body.addLayout(actions)
         for button in self.findChildren(QPushButton):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._scan_devices(auto_fill=not bool(current))
+        self.fit_to_available(QSize(660, 720))
 
     def _scan_devices(self, auto_fill=False):
         try:

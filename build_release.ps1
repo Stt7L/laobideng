@@ -26,6 +26,7 @@ $pyinstallerArgs = @(
   '--add-data', 'assets\ripple.ico;assets',
   '--add-data', 'assets\ripple.png;assets',
   '--add-data', 'assets\ripple.svg;assets',
+  '--add-data', 'assets\chevron-down.svg;assets',
   '--add-data', 'assets\fonts;assets\fonts',
   '--add-data', 'third_party;third_party', 'main.py'
 )
@@ -39,5 +40,5 @@ if (Test-Path -LiteralPath $shadowIcu) {
 }
 & $compilerExe 'installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
-Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.5.4.exe') |
+Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.5.7.exe') |
   Select-Object FullName, Length, LastWriteTime

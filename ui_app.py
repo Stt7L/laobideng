@@ -14,11 +14,11 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QSize, QRect, QRectF, QPointF, QPoint, QSignalBlocker, QStandardPaths, QUrl, Signal, QEasingCurve, QPropertyAnimation, QVariantAnimation
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QFontInfo, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QFontInfo, QIcon, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QShortcut, QStaticText, QTransform
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
-    QComboBox, QDialog, QFileDialog, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QDialog, QFileDialog, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
@@ -26,8 +26,11 @@ from PySide6.QtWidgets import (
 from backend import LightingController, bluetooth_keyboard_present
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
 from device_detection import detect_keyboards, preferred_known_keyboard
+from ui_controls import SurfaceButton, motion_duration
+from ui_select import SurfaceComboBox
+from ui_window import RoundedWindowFrame, WINDOW_RADIUS
 from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE, WIDTH_EFFECTS
-from layout import KEYCAPS, LED_CENTERS, restore_v98_layout, set_keycaps
+from layout import KEYCAPS, restore_v98_layout, set_keycaps
 
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -75,17 +78,46 @@ def ui_display_font(size=10, weight=QFont.Weight.Normal):
     return font
 
 
-def keyboard_cap_color(values):
-    peak = max(values)
-    if peak <= 0:
-        return QColor(244, 243, 241)
-    # Clear caps on a light keyboard retain the LED hue even at low output.
-    # Mixing the raw dim RGB into gray made every low-brightness effect look off.
-    strength = 0.86 * (peak / 255) ** 0.55
-    base = (244, 243, 241)
-    return QColor(*(round(base[index] * (1 - strength) +
-                          values[index] * 255 / peak * strength)
-                    for index in range(3)))
+def ui_stylesheet():
+    text = (ROOT / "ui.qss").read_text(encoding="utf-8")
+    arrow = (ROOT / "assets" / "chevron-down.svg").as_posix()
+    return text.replace("url(assets/chevron-down.svg)", f'url("{arrow}")')
+
+
+def keyboard_cap_color(values, reference_colors=()):
+    rgb = tuple(max(0, min(255, round(value))) for value in values)
+    references = tuple(tuple(reference) for reference in reference_colors)
+    return QColor(*_keyboard_cap_rgb(rgb, references))
+
+
+@lru_cache(maxsize=4096)
+def _keyboard_cap_rgb(rgb, reference_colors):
+    peak = max(rgb)
+    if not peak:
+        return (231, 231, 233)
+    # LED drive strength is not screen lightness. A 0.18 background envelope
+    # must still read as the selected blue/white, rather than a black key.
+    # Restore known hues without a white material tint; retain the emitted
+    # chromaticity for blends and effects with their own palette.
+    hue = tuple(value / peak for value in rgb)
+    candidates = []
+    for reference in reference_colors:
+        target_peak = max(reference)
+        if not target_peak:
+            continue
+        error = max(abs(value - channel / target_peak)
+                    for value, channel in zip(hue, reference))
+        candidates.append((error, tuple(reference)))
+    if candidates and min(error for error, _ in candidates) <= 0.025:
+        return min(candidates, key=lambda candidate: candidate[0])[1]
+    # Use continuous hue weights for intermediate animation colors, so leaving
+    # a recognized base hue cannot cause a sudden change in display lightness.
+    weights = [(1 / (0.04 + error) ** 4, max(reference))
+               for error, reference in candidates]
+    display_peak = (sum(weight * value for weight, value in weights) /
+                    sum(weight for weight, _ in weights)) if weights else 200
+    gain = max(1.0, display_peak / peak)
+    return tuple(min(255, round(value * gain)) for value in rgb)
 
 
 def blend_color(start, end, fraction):
@@ -332,10 +364,16 @@ def control_icon(kind, color="#252525"):
     elif kind == "regular":
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(color))
-        painter.drawRoundedRect(QRectF(2, 2, 16, 16), 4, 4)
-        painter.setPen(QPen(cutout, 1.8))
-        painter.drawLine(QPointF(10, 6), QPointF(10, 14))
-        painter.drawLine(QPointF(6, 10), QPointF(14, 10))
+        painter.drawRoundedRect(QRectF(1.5, 3.5, 17, 13), 3, 3)
+        painter.setBrush(cutout)
+        for row in range(2):
+            for column in range(4):
+                painter.drawRoundedRect(QRectF(4 + column * 3.2,
+                                              6.5 + row * 3.2, 1.9, 1.9), .5, .5)
+        painter.drawRoundedRect(QRectF(6.2, 13, 7.6, 1.5), .7, .7)
+    elif kind == "search":
+        painter.drawEllipse(QRectF(3, 3, 10.5, 10.5))
+        painter.drawLine(QPointF(11.5, 11.5), QPointF(17, 17))
     elif kind == "refresh":
         painter.drawArc(QRectF(3, 3, 14, 14), 40 * 16, 290 * 16)
         painter.drawLine(QPointF(15.8, 3.8), QPointF(16.5, 8.1))
@@ -413,17 +451,20 @@ class EffectChoiceButton(QPushButton):
         super().__init__(parent)
         self.title = title
         self.description = description
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(description)
+        self.setToolTip(description)
         self.setCheckable(True)
-        self.setMinimumHeight(68)
+        self.setMinimumHeight(64)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self._hover_level = 0.0
         self._selected_level = 0.0
         self._hover_motion = QVariantAnimation(self)
-        self._hover_motion.setDuration(170)
+        self._hover_motion.setDuration(motion_duration(170))
         self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._hover_motion.valueChanged.connect(self._set_hover_level)
         self._selection_motion = QVariantAnimation(self)
-        self._selection_motion.setDuration(220)
+        self._selection_motion.setDuration(motion_duration(220))
         self._selection_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._selection_motion.valueChanged.connect(self._set_selected_level)
         self.toggled.connect(self._animate_selection)
@@ -474,7 +515,7 @@ class EffectChoiceButton(QPushButton):
             border = blend_color(border, "#1D1D1F", self._selected_level)
             title_color = blend_color("#252527", "#1D1D1F",
                                       max(self._hover_level, self._selected_level))
-            detail_color = blend_color("#77777B", "#69696C",
+            detail_color = blend_color("#707074", "#626266",
                                        max(self._hover_level, self._selected_level))
         rect = QRectF(1, 1 + (1 if pressed else 0),
                       self.width() - 2, self.height() - 3)
@@ -495,7 +536,7 @@ class EffectChoiceButton(QPushButton):
         painter.setFont(detail_font)
         painter.setPen(QColor(detail_color))
         detail_width = max(20, self.width() - 28)
-        painter.drawText(QRectF(16, 34, detail_width, 21),
+        painter.drawText(QRectF(16, 32, detail_width, 19),
                          Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(
                              self.description, Qt.TextElideMode.ElideRight,
@@ -523,11 +564,11 @@ class SwitchButton(QPushButton):
         self._switch_level = 0.0
         self._hover_level = 0.0
         self._switch_motion = QVariantAnimation(self)
-        self._switch_motion.setDuration(190)
+        self._switch_motion.setDuration(motion_duration(190))
         self._switch_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._switch_motion.valueChanged.connect(self._set_switch_level)
         self._hover_motion = QVariantAnimation(self)
-        self._hover_motion.setDuration(170)
+        self._hover_motion.setDuration(motion_duration(170))
         self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._hover_motion.valueChanged.connect(self._set_hover_level)
         self.toggled.connect(self._animate_switch)
@@ -617,7 +658,7 @@ class FineSlider(QSlider):
         self._motion_timer.timeout.connect(self._advance_visual)
         self.valueChanged.connect(self._animate_to_value)
         self._hover_motion = QVariantAnimation(self)
-        self._hover_motion.setDuration(165)
+        self._hover_motion.setDuration(motion_duration(165))
         self._hover_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._hover_motion.valueChanged.connect(self._set_hover_level)
 
@@ -637,7 +678,7 @@ class FineSlider(QSlider):
         return self.EDGE + fraction * max(1, self.width() - self.EDGE * 2)
 
     def _animate_to_value(self, _value):
-        if self.isSliderDown():
+        if self.isSliderDown() or not motion_duration(170):
             self._visual_fraction = self._fraction()
             self._motion_timer.stop()
         else:
@@ -662,13 +703,15 @@ class FineSlider(QSlider):
                                QPainter.RenderHint.TextAntialiasing)
         center_y = self.height() / 2
         x = self._position(self._visual_fraction)
-        track = QRectF(4, center_y - 5, max(1, self.width() - 8), 10)
+        track = QRectF(self.EDGE, center_y - 4,
+                       max(1, self.width() - self.EDGE * 2), 8)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#EDEDED"))
         painter.drawRoundedRect(track, 5, 5)
-        fill = QRectF(4, center_y - 5, max(0, x - 4), 10)
+        fill = QRectF(self.EDGE, center_y - 4, max(0, x - self.EDGE), 8)
         painter.setBrush(QColor("#303030" if self.isSliderDown() else "#151515"))
-        painter.drawRoundedRect(fill, 5, 5)
+        if fill.width() > 0:
+            painter.drawRoundedRect(fill, 4, 4)
         mark_opacity = 1.0 if self.isSliderDown() or self.hasFocus() else self._hover_level
         if mark_opacity > 0.01:
             for mark in self._snap_values:
@@ -688,7 +731,7 @@ class FineSlider(QSlider):
         thumb_radius = 10 if self.isSliderDown() else 11
         painter.setBrush(QColor(0, 0, 0, 42))
         painter.drawEllipse(QPointF(x, center_y + 2), thumb_radius + 1, thumb_radius + 1)
-        painter.setPen(QPen(QColor("#D9D9D9" if self.isSliderDown() else "#FFFFFF"), 1))
+        painter.setPen(QPen(QColor("#C9C9CC" if self.isSliderDown() else "#D8D8DC"), 1))
         painter.setBrush(QColor("#FFFFFF"))
         painter.drawEllipse(QPointF(x, center_y), thumb_radius, thumb_radius)
         if self.isSliderDown():
@@ -706,6 +749,8 @@ class FineSlider(QSlider):
             nearest = min(self._snap_values, key=lambda mark: abs(mark - raw))
             distance = abs(self._position((nearest - self.minimum()) /
                                           max(1, self.maximum() - self.minimum())) - x)
+            if distance <= 7:
+                self._active_snap = nearest
             if settle and distance <= 11:
                 pull = 0.72 * (1 - distance / 11) ** 2
                 raw = raw * (1 - pull) + nearest * pull
@@ -847,7 +892,9 @@ class ColorField(QWidget):
         shade.setColorAt(1, QColor(0, 0, 0))
         painter.fillRect(area, QBrush(shade))
         painter.setClipping(False)
-        painter.setPen(QPen(QColor("#8F8F8F" if self._hovered else "#DADADA"), 1))
+        painter.setPen(QPen(QColor("#333333" if self.hasFocus() else
+                                  "#8F8F8F" if self._hovered else "#DADADA"),
+                            1.5 if self.hasFocus() else 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(area.adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
         x = max(10, min(self.width() - 11,
@@ -858,9 +905,6 @@ class ColorField(QWidget):
         painter.drawEllipse(QPointF(x, y), 8, 8)
         painter.setPen(QPen(QColor("#FFFFFF"), 2.5))
         painter.drawEllipse(QPointF(x, y), 8, 8)
-        if self.hasFocus():
-            painter.setPen(QPen(QColor("#333333"), 2))
-            painter.drawRoundedRect(area.adjusted(3, 3, -3, -3), 10, 10)
         painter.end()
 
     def enterEvent(self, event):
@@ -959,14 +1003,17 @@ class KeyboardPreview(QWidget):
 
     def __init__(self, engine, parent=None):
         super().__init__(parent)
+        self._label_cache = {}
         self.engine = engine
         # The 790 x 270 keyboard should fit at native scale in the gallery.
         # Shrinking it to 80% made the key legends visibly stair-stepped.
         self.setMinimumHeight(340)
         self.setAccessibleName("键盘灯效预览")
+        self.setAccessibleDescription("自定义灯效中，方向键选择键位，空格切换，Delete 擦除")
         self.setMouseTracking(True)
         self._brush = None
         self._hover_key = None
+        self._focused_key = None
 
     def _editable(self):
         return self.engine.effect in ("custom_ecg", "custom_canvas", "custom_sparkle")
@@ -1003,12 +1050,57 @@ class KeyboardPreview(QWidget):
                                                      Qt.MouseButton.RightButton):
             name = self._key_at(event.position())
             if name is not None:
+                self.setFocus(Qt.FocusReason.MouseFocusReason)
+                self._focused_key = name
                 self._brush = (name not in self._selected_keys()
                                if event.button() == Qt.MouseButton.LeftButton else False)
                 self._paint_key_at(event.position())
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def focusInEvent(self, event):
+        if self._focused_key is None:
+            self._focused_key = next((cap.name for cap in KEYCAPS if cap.leds), None)
+        self.update()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self.update()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        if not self._editable():
+            return super().keyPressEvent(event)
+        caps = [cap for cap in KEYCAPS if cap.leds]
+        current = next((cap for cap in caps if cap.name == self._focused_key), caps[0])
+        directions = {Qt.Key.Key_Left: (-1, 0), Qt.Key.Key_Right: (1, 0),
+                      Qt.Key.Key_Up: (0, -1), Qt.Key.Key_Down: (0, 1)}
+        direction = directions.get(event.key())
+        if direction:
+            cx, cy = current.x + current.w / 2, current.y + current.h / 2
+            candidates = []
+            for cap in caps:
+                dx, dy = cap.x + cap.w / 2 - cx, cap.y + cap.h / 2 - cy
+                along = dx * direction[0] + dy * direction[1]
+                across = abs(dy if direction[0] else dx)
+                if along > 1:
+                    candidates.append((along + across * 3, cap.name))
+            if candidates:
+                self._focused_key = min(candidates)[1]
+        elif event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                              Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            erase = event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace)
+            self.keyEdited.emit(current.name,
+                                False if erase else current.name not in self._selected_keys())
+            self.editFinished.emit()
+        elif event.key() in (Qt.Key.Key_Home, Qt.Key.Key_End):
+            self._focused_key = caps[0 if event.key() == Qt.Key.Key_Home else -1].name
+        else:
+            return super().keyPressEvent(event)
+        self.setAccessibleDescription(f"当前键位 {self._focused_key}；空格切换，Delete 擦除")
+        self.update()
+        event.accept()
 
     def mouseMoveEvent(self, event):
         if self._editable():
@@ -1055,7 +1147,7 @@ class KeyboardPreview(QWidget):
         painter.setPen(QColor("#171717"))
         painter.setFont(ui_display_font(10, QFont.Weight.Medium))
         painter.drawText(20, 30, f"{getattr(self, 'model', 'V98 Pro')}  /  键位预览")
-        painter.setPen(QColor("#858585"))
+        painter.setPen(QColor("#707074"))
         painter.setFont(ui_display_font(9))
         painter.drawText(self.width() - 166, 30,
                          "点按切换 · 拖动连画" if self._editable() else
@@ -1072,6 +1164,9 @@ class KeyboardPreview(QWidget):
         painter.setBrush(keyboard_surface)
         painter.drawRoundedRect(QRectF(0, 0, 790, 270), 18, 18)
         frame = self.engine.preview_frame()
+        reference_colors = ((self.engine.ecg_background, self.engine.base, self.engine.accent)
+                            if self.engine.effect in ("audio_ecg", "custom_ecg") else
+                            (self.engine.base, self.engine.accent))
         label_font = ui_display_font()
         label_font.setPixelSize(12)
         label_font.setWeight(QFont.Weight.DemiBold)
@@ -1081,36 +1176,61 @@ class KeyboardPreview(QWidget):
             colors = [frame[led] for led in cap.leds if led < len(frame)]
             rgb = tuple(round(sum(color[i] for color in colors) / len(colors))
                         for i in range(3)) if colors else (0, 0, 0)
-            # The keyboard has translucent light keycaps over a white case.
-            # A dark preview base suppressed colors that remain visible in hand.
-            surface = keyboard_cap_color(rgb)
-            hovered = self._editable() and cap.name == self._hover_key
+            surface = keyboard_cap_color(rgb, reference_colors)
+            hovered = self._editable() and (cap.name == self._hover_key or
+                                           self.hasFocus() and cap.name == self._focused_key)
             painter.setPen(QPen(QColor("#222224") if hovered else
                                 QColor("#C7C7C9"), 2 if hovered else 1))
             key_rect = QRectF(cx, cy, cw, ch)
-            led_segments = sorted((LED_CENTERS[led][0], frame[led])
-                                  for led in cap.leds
-                                  if led in LED_CENTERS and led < len(frame))
-            if (len(led_segments) > 1 and
-                    led_segments[-1][0] - led_segments[0][0] > 5):
-                # A long key remains one cap. Its LEDs blend inside the same
-                # rounded outline instead of showing hard internal partitions.
-                gradient = QLinearGradient(cx, cy, cx + cw, cy)
-                gradient.setColorAt(0, keyboard_cap_color(led_segments[0][1]))
-                for led_x, segment_rgb in led_segments:
-                    stop = min(1.0, max(0.0, (led_x - 48 - cx) / cw))
-                    gradient.setColorAt(stop, keyboard_cap_color(segment_rgb))
-                gradient.setColorAt(1, keyboard_cap_color(led_segments[-1][1]))
-                painter.setBrush(gradient)
-            else:
-                painter.setBrush(surface)
+            # Display a physical key as one unit, including Space and Enter.
+            painter.setBrush(surface)
             painter.drawRoundedRect(key_rect, 5, 5)
             light = (surface.red() * 0.3 + surface.green() * 0.59 +
                      surface.blue() * 0.11)
             painter.setPen(QColor("#1D1D1D") if light > 115 else QColor("#F9F9F9"))
-            painter.drawText(QRectF(cx + 2, cy + 1, cw - 4, ch - 2),
-                             Qt.AlignmentFlag.AlignCenter, cap.label)
+            text_key = (cap.label, label_font.toString())
+            text = self._label_cache.get(text_key)
+            if text is None:
+                text = QStaticText(cap.label)
+                text.setTextFormat(Qt.TextFormat.PlainText)
+                text.setPerformanceHint(QStaticText.PerformanceHint.AggressiveCaching)
+                text.prepare(QTransform(), label_font)
+                self._label_cache[text_key] = text
+            size = text.size()
+            painter.drawStaticText(QPointF(cx + (cw - size.width()) / 2,
+                                           cy + (ch - size.height()) / 2), text)
         painter.restore()
+        painter.end()
+
+
+class SchemeSummary(QWidget):
+    """A compact view of the effect and colors being adjusted or saved."""
+
+    def __init__(self, engine, parent=None):
+        super().__init__(parent)
+        self.engine = engine
+        self.setFixedHeight(48)
+        self.setAccessibleName("当前灯光方案")
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing |
+                               QPainter.RenderHint.TextAntialiasing)
+        painter.setPen(QPen(QColor("#D3D3D7"), 0.75))
+        for x, color in ((13, self.engine.base), (33, self.engine.ecg_background
+                         if self.engine.effect == "audio_ecg" else self.engine.accent)):
+            painter.setBrush(QColor(*color))
+            painter.drawEllipse(QPointF(x, 24), 11, 11)
+        title = next(title for effect, title, _ in EFFECTS if effect == self.engine.effect)
+        painter.setFont(ui_display_font(10, QFont.Weight.Medium))
+        painter.setPen(QColor("#1D1D1F"))
+        painter.drawText(QRectF(56, 3, self.width() - 58, 22),
+                         Qt.AlignmentFlag.AlignVCenter, f"当前 · {title}")
+        painter.setFont(ui_display_font(9))
+        painter.setPen(QColor("#707074"))
+        text = f"{color_hex(self.engine.base)}  /  {color_hex(self.engine.ecg_background if self.engine.effect == 'audio_ecg' else self.engine.accent)}"
+        painter.drawText(QRectF(56, 26, self.width() - 58, 18),
+                         Qt.AlignmentFlag.AlignVCenter, text)
         painter.end()
 
 
@@ -1200,10 +1320,10 @@ class MainWindow(QMainWindow):
         self._resize_idle_timer.setSingleShot(True)
         self._resize_idle_timer.setInterval(170)
         self._resize_idle_timer.timeout.connect(self._finish_resize)
-        self.setMinimumSize(960, 650)
+        self.setMinimumSize(880, 600)
         available = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1500, available.width() - 80),
-                    min(900, max(650, available.height() - 80)))
+                    min(900, max(600, available.height() - 80)))
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(350)
@@ -1214,10 +1334,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().applicationStateChanged.connect(self._application_state_changed)
         self.cancel_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self.cancel_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-        self.cancel_shortcut.activated.connect(self._cancel_color_editor)
+        self.cancel_shortcut.activated.connect(self._handle_escape)
         self._build_tray()
         self._build_single_instance_server()
         self._set_light_title_bar()
+        self._window_frame = RoundedWindowFrame(self)
+        self._last_preview_update = 0.0
+        self._last_preview_signature = None
 
         self.frame_timer = QTimer(self)
         self.frame_timer.setInterval(33)
@@ -1309,6 +1432,7 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
+        sidebar.setMouseTracking(True)
         sidebar.installEventFilter(self)
         self._sidebar = sidebar
         sidebar.setFixedWidth(210)
@@ -1327,6 +1451,8 @@ class MainWindow(QMainWindow):
         self.effect_search.setClearButtonEnabled(True)
         self.effect_search.setAccessibleName("搜索灯效")
         self.effect_search.setFixedHeight(35)
+        self.effect_search.addAction(control_icon("search", "#707074"),
+                                     QLineEdit.ActionPosition.LeadingPosition)
         self.effect_search.textChanged.connect(self._search_effects)
         side.addWidget(self.effect_search)
         side.addSpacing(17)
@@ -1339,7 +1465,7 @@ class MainWindow(QMainWindow):
             ("设备与设置", "device"),
         )
         for index, (label, icon_name) in enumerate(sections):
-            button = QPushButton(label)
+            button = SurfaceButton(label)
             button.setObjectName("sideNav")
             button.setCheckable(True)
             button.setIcon(control_icon(icon_name))
@@ -1350,7 +1476,7 @@ class MainWindow(QMainWindow):
             side.addWidget(button)
             self.nav_buttons.append(button)
         side.addStretch()
-        self.quick_button = QPushButton("快捷控制")
+        self.quick_button = SurfaceButton("快捷控制")
         self.quick_button.setObjectName("sideNav")
         self.quick_button.setCheckable(True)
         self.quick_button.setIcon(control_icon("power"))
@@ -1376,6 +1502,7 @@ class MainWindow(QMainWindow):
         workspace_layout.setSpacing(0)
         topbar = QFrame()
         topbar.setObjectName("workspaceTopbar")
+        topbar.setMouseTracking(True)
         self._chrome_bar = topbar
         topbar.installEventFilter(self)
         topbar_layout = QGridLayout(topbar)
@@ -1408,7 +1535,7 @@ class MainWindow(QMainWindow):
                 ("window_minimize", "最小化", self.showMinimized),
                 ("window_maximize", "最大化", self._toggle_window_maximized),
                 ("window_close", "关闭到托盘", self.close)):
-            button = QPushButton()
+            button = SurfaceButton()
             button.setObjectName("windowClose" if kind == "window_close"
                                  else "windowControl")
             button.setIcon(control_icon(kind, "#555558"))
@@ -1463,7 +1590,7 @@ class MainWindow(QMainWindow):
         for text, handler, style in (("清空画布", self._clear_custom_keys, "secondary"),
                                      ("全部点亮", self._fill_custom_keys, "secondary"),
                                      ("保存图案", self._save_custom_keys, "primary")):
-            button = QPushButton(text)
+            button = SurfaceButton(text)
             button.setObjectName(style)
             button.setIcon(control_icon(
                 "clear" if text == "清空画布" else
@@ -1481,16 +1608,25 @@ class MainWindow(QMainWindow):
         self._refresh_custom_editor()
 
         effects_card, effects_layout = self._card("选择灯效")
+        self.effects_card = effects_card
         effects_hint = QLabel("选择分类与灯效；常用配色和参数可保存为预设")
-        effects_hint.setObjectName("muted")
+        effects_hint.setObjectName("hint")
+        effects_hint.setWordWrap(True)
         effects_layout.addWidget(effects_hint)
-        gallery_controls = QHBoxLayout()
         self.gallery_selection = QLabel()
-        self.gallery_selection.setObjectName("muted")
-        gallery_controls.addWidget(self.gallery_selection)
-        gallery_controls.addStretch()
-        effects_layout.addLayout(gallery_controls)
+        self.gallery_selection.setObjectName("hint")
+        effects_card.heading_row.addStretch()
+        effects_card.heading_row.addWidget(self.gallery_selection)
+        self.locate_effect_button = SurfaceButton()
+        self.locate_effect_button.setObjectName("windowControl")
+        self.locate_effect_button.setFixedSize(28, 28)
+        self.locate_effect_button.setIcon(control_icon("reactive"))
+        self.locate_effect_button.setAccessibleName("定位当前灯效")
+        self.locate_effect_button.setToolTip("定位当前灯效")
+        self.locate_effect_button.clicked.connect(self._reveal_current_effect)
+        effects_card.heading_row.addWidget(self.locate_effect_button)
         category_row = QGridLayout()
+        self.category_row = category_row
         category_row.setHorizontalSpacing(7)
         category_row.setVerticalSpacing(7)
         self.category_buttons = {}
@@ -1499,7 +1635,7 @@ class MainWindow(QMainWindow):
         self.category_grids = category_grids
         for index, (category, title, subtitle) in enumerate(CATEGORIES):
             count = sum(EFFECT_CATEGORY[item[0]] == category for item in EFFECTS)
-            button = QPushButton(f"{title} · {count}")
+            button = SurfaceButton(f"{title} · {count}")
             button.setObjectName("categoryChoice")
             button.setCheckable(True)
             button.setAccessibleName(f"{title}，{count} 种，点击展开或收起")
@@ -1537,12 +1673,18 @@ class MainWindow(QMainWindow):
             category_positions[category] += 1
             category_grids[category].addWidget(button, position // 2, position % 2)
             self.effect_buttons[effect_id] = button
+        self.gallery_empty = QLabel("没有找到相符的灯效\n试试名称或特点，如「涟漪」「音乐」")
+        self.gallery_empty.setObjectName("emptyState")
+        self.gallery_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gallery_empty.setMinimumHeight(90)
+        self.gallery_empty.hide()
+        effects_layout.addWidget(self.gallery_empty)
         self.music_status = QLabel("分析电脑默认播放设备的节奏和频段；不会保存声音")
         self.music_status.setObjectName("hint")
         self.music_status.setWordWrap(True)
         music_status_row = QHBoxLayout()
         music_status_row.addWidget(self.music_status, 1)
-        self.audio_refresh = QPushButton("刷新音频设备")
+        self.audio_refresh = SurfaceButton("刷新音频设备")
         self.audio_refresh.setObjectName("quiet")
         self.audio_refresh.setIcon(control_icon("refresh"))
         self.audio_refresh.setIconSize(QSize(17, 17))
@@ -1554,15 +1696,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(effects_card,
                          alignment=Qt.AlignmentFlag.AlignHCenter)
         colors_card, colors_layout = self._card("当前配色")
+        self.colors_card = colors_card
         colors_card.setMaximumWidth(1080)
         self.palette_hint = QLabel()
         self.palette_hint.setObjectName("muted")
+        self.palette_hint.setWordWrap(True)
         colors_layout.addWidget(self.palette_hint)
-        tiles = QHBoxLayout()
-        tiles.setSpacing(12)
-        self.base_button = QPushButton()
-        self.accent_button = QPushButton()
-        self.ecg_background_button = QPushButton()
+        tiles = QGridLayout()
+        self.color_tiles_grid = tiles
+        tiles.setSpacing(10)
+        self.base_button = SurfaceButton()
+        self.accent_button = SurfaceButton()
+        self.ecg_background_button = SurfaceButton()
         for button, target in ((self.base_button, "base"),
                                (self.accent_button, "accent"),
                                (self.ecg_background_button, "ecg_background")):
@@ -1575,11 +1720,11 @@ class MainWindow(QMainWindow):
                 "选择当前灯效的点缀色")
             button.clicked.connect(lambda _checked=False, which=target:
                                    self._open_color_editor(which))
-            tiles.addWidget(button, 1)
+            tiles.addWidget(button, 0, tiles.count())
         colors_layout.addLayout(tiles)
         global_row = QHBoxLayout()
         global_row.setSpacing(12)
-        self.global_button = QPushButton()
+        self.global_button = SurfaceButton()
         self.global_button.setObjectName("colorTile")
         self.global_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.global_button.setIconSize(QSize(28, 28))
@@ -1587,7 +1732,7 @@ class MainWindow(QMainWindow):
         self.global_button.clicked.connect(
             lambda: self._open_color_editor("global_color"))
         global_row.addWidget(self.global_button, 1)
-        self.global_apply_button = QPushButton("同步全部底色与点缀色")
+        self.global_apply_button = SurfaceButton("同步全部底色与点缀色")
         self.global_apply_button.setObjectName("secondary")
         self.global_apply_button.setIcon(control_icon("refresh"))
         self.global_apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1596,7 +1741,7 @@ class MainWindow(QMainWindow):
         global_row.addWidget(self.global_apply_button)
         colors_layout.addLayout(global_row)
         inspiration_header = QHBoxLayout()
-        self.inspiration_toggle = QPushButton()
+        self.inspiration_toggle = SurfaceButton()
         self.inspiration_toggle.setObjectName("inspirationToggle")
         self.inspiration_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.inspiration_toggle.clicked.connect(self._toggle_inspiration)
@@ -1611,31 +1756,34 @@ class MainWindow(QMainWindow):
         inspiration_layout.setContentsMargins(0, 0, 0, 0)
         inspiration_layout.setSpacing(8)
         inspiration_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        mood_row = QHBoxLayout()
+        mood_row = QGridLayout()
+        self.mood_grid = mood_row
         mood_row.setSpacing(8)
         self.pairing_mood_buttons = {}
         self.pairing_panels = {}
-        for mood in PAIRING_MOODS:
-            mood_button = QPushButton(mood)
+        for mood_index, mood in enumerate(PAIRING_MOODS):
+            mood_button = SurfaceButton(mood)
             mood_button.setObjectName("pairingMood")
             mood_button.setCheckable(True)
             mood_button.setCursor(Qt.CursorShape.PointingHandCursor)
             mood_button.clicked.connect(lambda _checked=False, chosen=mood:
                                         self._show_pairing_mood(chosen))
-            mood_row.addWidget(mood_button, 1)
+            mood_row.addWidget(mood_button, 0, mood_index)
             self.pairing_mood_buttons[mood] = mood_button
         inspiration_layout.addLayout(mood_row)
         self.pairing_buttons = []
+        self.pairing_grids = {}
         for mood in PAIRING_MOODS:
             panel = QWidget()
             pairing_grid = QGridLayout(panel)
             pairing_grid.setContentsMargins(0, 0, 0, 0)
             pairing_grid.setSpacing(8)
+            self.pairing_grids[mood] = pairing_grid
             position = 0
             for index, (group, name, base, accent) in enumerate(COLOR_PAIRINGS):
                 if group != mood:
                     continue
-                button = QPushButton(name)
+                button = SurfaceButton(name)
                 button.setObjectName("palettePair")
                 button.setCheckable(True)
                 button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1658,7 +1806,7 @@ class MainWindow(QMainWindow):
         self.color_editor = QFrame()
         self.color_editor.setObjectName("inlineEditor")
         editor_layout = QVBoxLayout(self.color_editor)
-        editor_layout.setContentsMargins(15, 14, 15, 14)
+        editor_layout.setContentsMargins(18, 17, 18, 17)
         editor_layout.setSpacing(10)
         self.editor_title = QLabel("选择颜色")
         self.editor_title.setObjectName("sectionTitle")
@@ -1725,22 +1873,24 @@ class MainWindow(QMainWindow):
         editor_actions = QHBoxLayout()
         editor_actions.setSpacing(8)
         editor_actions.addStretch()
-        cancel = QPushButton("取消")
+        cancel = SurfaceButton("取消")
         cancel.setObjectName("quiet")
         cancel.clicked.connect(self._cancel_color_editor)
         editor_actions.addWidget(cancel)
-        apply = QPushButton("应用颜色")
+        apply = SurfaceButton("应用颜色")
         apply.setObjectName("primary")
         apply.clicked.connect(self._apply_color)
         editor_actions.addWidget(apply)
         editor_layout.addLayout(editor_actions)
-        colors_layout.addWidget(self.color_editor)
+        colors_layout.insertWidget(3, self.color_editor)
         self.color_editor.hide()
         self._update_palette_hint()
         palette_page.addWidget(colors_card, alignment=Qt.AlignmentFlag.AlignHCenter)
         palette_page.addStretch()
 
         settings_card, settings_layout = self._card("灯效设置")
+        self.tuning_scheme = SchemeSummary(self.engine)
+        settings_layout.insertWidget(1, self.tuning_scheme)
         settings_card.setMaximumWidth(1020)
         self.brightness_slider, self.brightness_value, _ = self._slider_row(
             settings_layout, "整体亮度", 0, 1000,
@@ -1766,14 +1916,18 @@ class MainWindow(QMainWindow):
         self._refresh_brightness_labels()
         brightness_hint = QLabel("整体亮度控制全部灯光；底色和点缀色亮度可单独微调")
         brightness_hint.setObjectName("hint")
-        settings_layout.insertWidget(1, brightness_hint)
+        brightness_hint.setWordWrap(True)
+        settings_layout.insertWidget(2, brightness_hint)
         settings_hint = QLabel("拖动可细调；靠近圆点时轻轻吸附。也可在右侧直接输入数值")
         settings_hint.setObjectName("hint")
+        settings_hint.setWordWrap(True)
         settings_layout.addWidget(settings_hint)
         tuning_page.addWidget(settings_card, alignment=Qt.AlignmentFlag.AlignHCenter)
         tuning_page.addStretch()
 
         presets_card, presets_layout = self._card("保存与套用")
+        self.presets_scheme = SchemeSummary(self.engine)
+        presets_layout.addWidget(self.presets_scheme)
         presets_card.setMaximumWidth(960)
         presets_hint = QLabel("保存当前配色与亮度、速度、宽度；应用后切换灯效继续使用")
         presets_hint.setObjectName("muted")
@@ -1787,7 +1941,7 @@ class MainWindow(QMainWindow):
         self.preset_name_input.setAccessibleName("预设名称")
         self.preset_name_input.returnPressed.connect(self._save_preset)
         save_row.addWidget(self.preset_name_input, 1)
-        self.preset_save_button = QPushButton("保存当前设置")
+        self.preset_save_button = SurfaceButton("保存当前设置")
         self.preset_save_button.setObjectName("primary")
         self.preset_save_button.setIcon(control_icon("save", "#FFFFFF"))
         self.preset_save_button.clicked.connect(self._save_preset)
@@ -1795,16 +1949,16 @@ class MainWindow(QMainWindow):
         presets_layout.addLayout(save_row)
         use_row = QHBoxLayout()
         use_row.setSpacing(9)
-        self.preset_combo = QComboBox()
+        self.preset_combo = SurfaceComboBox()
         self.preset_combo.setAccessibleName("已保存的灯光预设")
         self.preset_combo.currentIndexChanged.connect(self._preset_selection_changed)
         use_row.addWidget(self.preset_combo, 1)
-        self.preset_apply_button = QPushButton("应用预设")
+        self.preset_apply_button = SurfaceButton("应用预设")
         self.preset_apply_button.setObjectName("secondary")
         self.preset_apply_button.setIcon(control_icon("refresh"))
         self.preset_apply_button.clicked.connect(self._apply_selected_preset)
         use_row.addWidget(self.preset_apply_button)
-        self.preset_delete_button = QPushButton("删除")
+        self.preset_delete_button = SurfaceButton("删除")
         self.preset_delete_button.setObjectName("quiet")
         self.preset_delete_button.clicked.connect(self._delete_selected_preset)
         use_row.addWidget(self.preset_delete_button)
@@ -1824,7 +1978,7 @@ class MainWindow(QMainWindow):
         for column, (mode, name) in enumerate((("auto", "自动选择"),
                                                ("wired", "USB 有线"),
                                                ("wireless", "2.4G 无线"))):
-            button = QPushButton(name)
+            button = SurfaceButton(name)
             button.setObjectName("transportChoice")
             button.setCheckable(True)
             button.setChecked(mode == self.engine.preference)
@@ -1851,7 +2005,7 @@ class MainWindow(QMainWindow):
         self.wireless_note.hide()
         connection_layout.addWidget(self.wireless_note)
 
-        self.adapter_toggle = QPushButton("提供其他键盘的适配资料")
+        self.adapter_toggle = SurfaceButton("提供其他键盘的适配资料")
         self.adapter_toggle.setObjectName("actionSecondary")
         self.adapter_toggle.setIcon(control_icon("add"))
         self.adapter_toggle.setFixedHeight(46)
@@ -1891,7 +2045,7 @@ class MainWindow(QMainWindow):
         adapter_layout.addLayout(id_row)
         photo_row = QHBoxLayout()
         photo_row.setSpacing(9)
-        photo_button = QPushButton("选择键盘照片")
+        photo_button = SurfaceButton("选择键盘照片")
         photo_button.setObjectName("secondary")
         photo_button.setCursor(Qt.CursorShape.PointingHandCursor)
         photo_button.clicked.connect(self._choose_adapter_photo)
@@ -1901,7 +2055,7 @@ class MainWindow(QMainWindow):
         photo_row.addWidget(self.adapter_photo_label, 1)
         adapter_layout.addLayout(photo_row)
         self.adapter_photo_path = None
-        export_button = QPushButton("导出适配资料")
+        export_button = SurfaceButton("导出适配资料")
         export_button.setObjectName("primary")
         export_button.setIcon(control_icon("save", "#FFFFFF"))
         export_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1918,14 +2072,14 @@ class MainWindow(QMainWindow):
         action_grid.setHorizontalSpacing(9)
         for column in range(3):
             action_grid.setColumnStretch(column, 1)
-        self.toggle_button = QPushButton()
+        self.toggle_button = SurfaceButton()
         self.toggle_button.setObjectName("actionPrimary")
         self.toggle_button.setIcon(control_icon("pause", "#FFFFFF"))
         self.toggle_button.setFixedHeight(46)
         self.toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.toggle_button.clicked.connect(self._toggle_effect)
         action_grid.addWidget(self.toggle_button, 0, 0, 1, 2)
-        exit_button = QPushButton("退出程序")
+        exit_button = SurfaceButton("退出程序")
         exit_button.setObjectName("actionSecondary")
         exit_button.setIcon(control_icon("power"))
         exit_button.setFixedHeight(46)
@@ -1960,7 +2114,7 @@ class MainWindow(QMainWindow):
         self.profile_summary.setObjectName("muted")
         self.profile_summary.setWordWrap(True)
         device_layout.addWidget(self.profile_summary)
-        edit_device = QPushButton("更换型号 / 编辑照片键位")
+        edit_device = SurfaceButton("更换型号 / 编辑照片键位")
         edit_device.setObjectName("secondary")
         edit_device.clicked.connect(self._edit_device_profile)
         device_layout.addWidget(edit_device)
@@ -1990,14 +2144,14 @@ class MainWindow(QMainWindow):
             "© 2021 Huawei Device Co., Ltd.")
         font_notice.setObjectName("muted")
         author_layout.addWidget(font_notice)
-        font_license = QPushButton("HarmonyOS Sans 字体许可")
+        font_license = SurfaceButton("HarmonyOS Sans 字体许可")
         font_license.setObjectName("galleryToggle")
         font_license.setIcon(control_icon("external"))
         font_license.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(ROOT / "assets" / "fonts" /
                                    "LICENSE-HarmonyOS-Sans.txt"))))
         author_layout.addWidget(font_license)
-        github_button = QPushButton("GitHub 项目")
+        github_button = SurfaceButton("GitHub 项目")
         github_button.setObjectName("galleryToggle")
         github_button.setIcon(control_icon("external"))
         github_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(PROJECT_URL)))
@@ -2023,7 +2177,7 @@ class MainWindow(QMainWindow):
                 ("键盘与连接", (device_card, connection_card)),
                 ("启动与后台", (startup_card,)),
                 ("关于老必灯", (author_card,)))):
-            menu_button = QPushButton(label)
+            menu_button = SurfaceButton(label)
             menu_button.setObjectName("settingsMenuChoice")
             menu_button.setCheckable(True)
             menu_button.clicked.connect(lambda _checked=False, selected=index:
@@ -2036,6 +2190,10 @@ class MainWindow(QMainWindow):
             panel_layout.setSpacing(1)
             for card in cards:
                 card.setObjectName("settingsSection")
+                effect = card.graphicsEffect()
+                if effect in self._shadowed_surfaces:
+                    self._shadowed_surfaces.remove(effect)
+                card.setGraphicsEffect(None)
                 panel_layout.addWidget(card)
             panel_layout.addStretch()
             self.settings_panels.append(panel)
@@ -2073,6 +2231,54 @@ class MainWindow(QMainWindow):
                 target = min(limit, available)
                 if card.width() != target:
                     card.setFixedWidth(target)
+        if hasattr(self, "effects_card"):
+            self._adapt_workspace_layout()
+
+    def _adapt_workspace_layout(self):
+        width = self.effects_card.width()
+        compact = width < 760
+        self.preview.setMinimumHeight(max(240, min(340,
+            round(62 + 270 * min(1, (self.preview.width() - 28) / 790)))))
+        signature = (compact, self.colors_card.width() < 800)
+        if getattr(self, "_layout_signature", None) != signature:
+            self._layout_signature = signature
+            for grid, buttons, columns in (
+                (self.category_row, list(self.category_buttons.values()), 2 if compact else 4),
+                (self.mood_grid, list(self.pairing_mood_buttons.values()), 4 if signature[1] else 7),
+            ):
+                while grid.count():
+                    grid.takeAt(0)
+                for column in range(7):
+                    grid.setColumnStretch(column, 1 if column < columns else 0)
+                for index, button in enumerate(buttons):
+                    grid.addWidget(button, index // columns, index % columns)
+            for mood, grid in self.pairing_grids.items():
+                while grid.count():
+                    grid.takeAt(0)
+                buttons = [button for index, button in self.pairing_buttons
+                           if COLOR_PAIRINGS[index][0] == mood]
+                columns = 2 if signature[1] else 3
+                for index, button in enumerate(buttons):
+                    grid.addWidget(button, index // columns, index % columns)
+        self._arrange_color_tiles()
+
+    def _arrange_color_tiles(self):
+        if not hasattr(self, "color_tiles_grid"):
+            return
+        buttons = [button for button in (self.base_button, self.ecg_background_button,
+                                         self.accent_button) if not button.isHidden()]
+        columns = 3 if self.colors_card.width() >= 900 else 2
+        signature = (tuple(buttons), columns)
+        if getattr(self, "_tile_signature", None) == signature:
+            return
+        self._tile_signature = signature
+        grid = self.color_tiles_grid
+        while grid.count():
+            grid.takeAt(0)
+        for column in range(3):
+            grid.setColumnStretch(column, 1 if column < min(columns, len(buttons)) else 0)
+        for index, button in enumerate(buttons):
+            grid.addWidget(button, index // columns, index % columns)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2115,17 +2321,39 @@ class MainWindow(QMainWindow):
         start = QRect(end)
         start.translate(-12, 0)
         self._quick_motion = QPropertyAnimation(self.quick_panel, b"geometry", self)
-        self._quick_motion.setDuration(190)
+        self._quick_motion.setDuration(motion_duration(190))
         self._quick_motion.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._quick_motion.setStartValue(start)
         self._quick_motion.setEndValue(end)
         self._quick_motion.start()
         self.quick_button.setChecked(True)
 
+    def _handle_escape(self):
+        if self.quick_panel.isVisible():
+            self.quick_panel.hide()
+            self.quick_button.setChecked(False)
+        else:
+            self._cancel_color_editor()
+
     def _resize_edges(self, position):
         if self.isMaximized():
             return None
         inset = 9
+        # A large rounded corner has no pixels inside the old 9x9 corner box.
+        # Keep diagonal resizing reachable along the actual curved perimeter.
+        corner = WINDOW_RADIUS + 4
+        for near, edges in (
+                (position.x() < corner and position.y() < corner,
+                 Qt.Edge.LeftEdge | Qt.Edge.TopEdge),
+                (position.x() >= self._window_root.width() - corner and
+                 position.y() < corner, Qt.Edge.RightEdge | Qt.Edge.TopEdge),
+                (position.x() < corner and position.y() >= self._window_root.height() - corner,
+                 Qt.Edge.LeftEdge | Qt.Edge.BottomEdge),
+                (position.x() >= self._window_root.width() - corner and
+                 position.y() >= self._window_root.height() - corner,
+                 Qt.Edge.RightEdge | Qt.Edge.BottomEdge)):
+            if near:
+                return edges
         edges = None
         for near, edge in ((position.x() < inset, Qt.Edge.LeftEdge),
                            (position.x() >= self._window_root.width() - inset,
@@ -2139,9 +2367,14 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         if watched in (getattr(self, "_window_root", None),
-                       getattr(self, "_window_shell", None)):
+                       getattr(self, "_window_shell", None),
+                       getattr(self, "_sidebar", None),
+                       getattr(self, "_chrome_bar", None)):
+            position = (watched.mapTo(self._window_root, event.position().toPoint())
+                        if event.type() in (QEvent.Type.MouseMove,
+                                             QEvent.Type.MouseButtonPress) else None)
             if event.type() == QEvent.Type.MouseMove:
-                edges = self._resize_edges(event.position().toPoint())
+                edges = self._resize_edges(position)
                 if edges is None:
                     watched.unsetCursor()
                 elif edges in (Qt.Edge.LeftEdge | Qt.Edge.TopEdge,
@@ -2156,7 +2389,7 @@ class MainWindow(QMainWindow):
                     watched.setCursor(Qt.CursorShape.SizeVerCursor)
             elif (event.type() == QEvent.Type.MouseButtonPress and
                   event.button() == Qt.MouseButton.LeftButton):
-                edges = self._resize_edges(event.position().toPoint())
+                edges = self._resize_edges(position)
                 if edges is not None and self.windowHandle() is not None:
                     return self.windowHandle().startSystemResize(edges)
         if watched in (getattr(self, "_chrome_bar", None),
@@ -2233,11 +2466,15 @@ class MainWindow(QMainWindow):
         card.setGraphicsEffect(shadow)
         self._shadowed_surfaces.append(shadow)
         content = QVBoxLayout(card)
-        content.setContentsMargins(29, 25, 29, 29)
-        content.setSpacing(18)
+        content.setContentsMargins(24, 23, 24, 24)
+        content.setSpacing(14)
         heading = QLabel(title)
         heading.setObjectName("sectionTitle")
-        content.addWidget(heading)
+        heading_row = QHBoxLayout()
+        heading_row.setSpacing(8)
+        heading_row.addWidget(heading)
+        card.heading_row = heading_row
+        content.addLayout(heading_row)
         return card, content
 
     def _refresh_startup_control(self):
@@ -2358,12 +2595,15 @@ class MainWindow(QMainWindow):
                                                    ctypes.c_void_p, ctypes.c_uint]
             dwm.DwmSetWindowAttribute(
                 hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
-            corner = ctypes.c_int(2)
+            corner = ctypes.c_int(1)
             dwm.DwmSetWindowAttribute(
                 hwnd, 33, ctypes.byref(corner), ctypes.sizeof(corner))
             no_border = ctypes.c_uint(0xFFFFFFFE)
             dwm.DwmSetWindowAttribute(
                 hwnd, 34, ctypes.byref(no_border), ctypes.sizeof(no_border))
+            rendering = ctypes.c_int(1)  # Custom companion owns the shadow.
+            dwm.DwmSetWindowAttribute(
+                hwnd, 2, ctypes.byref(rendering), ctypes.sizeof(rendering))
         except (AttributeError, OSError):
             pass
 
@@ -2374,6 +2614,7 @@ class MainWindow(QMainWindow):
 
     def show_window(self):
         self.showNormal()
+        self._window_frame.ensure_visible()
         self.raise_()
         self.activateWindow()
 
@@ -2485,9 +2726,7 @@ class MainWindow(QMainWindow):
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
                      lit_keys, self.engine.ripples_enabled)
-        if (self.page_stack.currentIndex() == 0 and
-                time.monotonic() - getattr(self, "_last_resize_at", 0) > 0.12):
-            self.preview.update()
+        self._refresh_preview_frame()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
             music_text = (
@@ -2498,6 +2737,23 @@ class MainWindow(QMainWindow):
                 f"音频暂不可用：{meter.error}")
             if self.music_status.text() != music_text:
                 self.music_status.setText(music_text)
+
+    def _refresh_preview_frame(self, now=None):
+        """Refresh changed, visible frames independently of the device cadence."""
+        now = time.monotonic() if now is None else now
+        if (not self._window_frame.content_visible() or
+                self.page_stack.currentIndex() != 0 or not self.preview.isVisible() or
+                now - getattr(self, "_last_resize_at", 0) <= 0.12 or
+                now - self._last_preview_update < 1 / 30):
+            return False
+        signature = (tuple(self.engine.preview_frame()), self.engine.base,
+                     self.engine.accent, self.engine.ecg_background, self.engine.effect)
+        self._last_preview_update = now
+        if signature == self._last_preview_signature:
+            return False
+        self._last_preview_signature = signature
+        self.preview.update()
+        return True
 
     def _set_status(self, text, kind):
         self.status.setText(text)
@@ -2537,6 +2793,8 @@ class MainWindow(QMainWindow):
         return None
 
     def _refresh_custom_editor(self):
+        editable = self.engine.effect in ("custom_ecg", "custom_canvas", "custom_sparkle")
+        self.preview.setFocusPolicy(Qt.FocusPolicy.StrongFocus if editable else Qt.FocusPolicy.NoFocus)
         selected = self._custom_key_set()
         self.custom_editor_card.setVisible(selected is not None)
         if selected is None:
@@ -2676,6 +2934,14 @@ class MainWindow(QMainWindow):
         self.music_status.setVisible(audio_visible)
         self.audio_refresh.setVisible(audio_visible)
 
+    def _reveal_current_effect(self):
+        self.effect_search.clear()
+        self.gallery_category = EFFECT_CATEGORY[self.engine.effect]
+        self._refresh_gallery()
+        self._show_section(0)
+        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(
+            self.effect_buttons[self.engine.effect], 12, 16))
+
     def _search_effects(self, text):
         if not hasattr(self, "effect_buttons"):
             return
@@ -2701,6 +2967,7 @@ class MainWindow(QMainWindow):
         for effect_id, button in self.effect_buttons.items():
             if not any(effect_id == found for found, _, _ in matches):
                 button.hide()
+        self.gallery_empty.setVisible(bool(query) and not matches)
         self._show_section(0)
         self._refresh_gallery()
         if query and not matches:
@@ -3007,6 +3274,11 @@ class MainWindow(QMainWindow):
         self.accent_button.setVisible(self.engine.effect not in ("audio_ecg", "solid"))
         self.ecg_background_button.setVisible(
             self.engine.effect in ("audio_ecg", "custom_ecg"))
+        self._arrange_color_tiles()
+        for summary in (getattr(self, "tuning_scheme", None),
+                        getattr(self, "presets_scheme", None)):
+            if summary is not None:
+                summary.update()
         self.inspiration_note.setText(
             "第二色会作为背景" if self.engine.effect == "audio_ecg"
             else "全键常亮只使用第一色" if self.engine.effect == "solid"
@@ -3073,6 +3345,7 @@ class MainWindow(QMainWindow):
         self._set_picker_color(QColor(*getattr(self.engine, target)))
         self.color_error.clear()
         self.color_editor.show()
+        self.global_apply_button.setEnabled(False)
         self.color_field.setFocus()
         self._show_section(1)
         QTimer.singleShot(0, lambda: self.color_scroll.ensureWidgetVisible(self.color_editor))
@@ -3144,6 +3417,7 @@ class MainWindow(QMainWindow):
         self.editing_original = None
         self.editing_color = None
         self.color_editor.hide()
+        self.global_apply_button.setEnabled(True)
         self.color_error.clear()
         self._mark_hex_invalid(False)
 
@@ -3257,7 +3531,7 @@ def run(preview=False):
     app.setStyle("Fusion")
     load_ui_font()
     app.setFont(ui_display_font(10))
-    app.setStyleSheet((ROOT / "ui.qss").read_text(encoding="utf-8"))
+    app.setStyleSheet(ui_stylesheet())
     LOG.info("Active UI font: %s", QFontInfo(app.font()).family())
     app.setQuitOnLastWindowClosed(False)
     autostart = "--autostart" in sys.argv and not preview
@@ -3287,6 +3561,7 @@ def run(preview=False):
     window = MainWindow(preview=preview)
     if not autostart or window.tray is None:
         window.show()
+        window._window_frame.ensure_visible()
     else:
         LOG.info("Started with Windows; window kept in system tray")
     result = app.exec()
