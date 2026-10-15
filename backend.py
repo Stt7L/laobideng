@@ -10,6 +10,7 @@ from pathlib import Path
 
 from effects import EFFECT_IDS, MUSIC, MOVING_MUSIC, REACTIVE, render, ripple_lifetime, reactive_lifetime
 from audio_spectrum import AudioSpectrum
+from keyboard_input import KeyboardInput
 from layout import NAME_CENTERS, NAME_LEDS
 
 LOG = logging.getLogger("vgn-ripple")
@@ -309,15 +310,9 @@ class LightingController:
     def __init__(self):
         self.handle = None
         self.hook = None
-        self.hook_proc = None
-        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self.user32.SetWindowsHookExW.restype = ctypes.c_void_p
-        self.user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
-        self.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
-        self.user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int,
-                                                wintypes.WPARAM, wintypes.LPARAM]
-        self.user32.CallNextHookEx.restype = ctypes.c_ssize_t
-        self.events = queue.Queue()
+        self.events = queue.Queue(maxsize=1024)
+        self.keyboard_input = KeyboardInput(VK_NAMES, self._key_pressed)
+        self._last_input_retry = 0.0
         self.ripples = []
         self.audio_meter = AudioSpectrum()
         self.audio_level = 0.0
@@ -539,6 +534,14 @@ class LightingController:
             self.disconnect()
             raise error
         now = now if now is not None else time.perf_counter()
+        if (self.ripples_enabled and self.effect in REACTIVE and
+                (self.connected or self.preview_events) and
+                not self.keyboard_input.running and now - self._last_input_retry > 2):
+            self._last_input_retry = now
+            try:
+                self._install_hook()
+            except OSError as error:
+                LOG.warning("Background keyboard input retry failed: %s", error)
         if self.ripples_enabled and self.effect in MUSIC:
             self.audio_level = self.audio_meter.sample()
             if self.audio_meter.mode == "spectrum":
@@ -633,53 +636,25 @@ class LightingController:
         return self.music_frame
 
     def _install_hook(self):
-        if self.hook:
-            return
+        # Keep the lifecycle entry point for existing UI callers. No low-level
+        # hook is installed: raw input has its own non-UI message pump.
+        self.keyboard_input.start()
+        self.hook = self.keyboard_input.hwnd
 
-        class KBDLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD),
-                        ("flags", wintypes.DWORD), ("time", wintypes.DWORD),
-                        ("dwExtraInfo", ctypes.c_size_t)]
-
-        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int,
-                                     wintypes.WPARAM, wintypes.LPARAM)
-        self.user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC,
-                                                   wintypes.HINSTANCE, wintypes.DWORD]
-
-        def callback(code, wparam, lparam):
-            if code >= 0 and wparam in (0x0100, 0x0104, 0x0101, 0x0105):
-                event = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if not (event.flags & 0x10):
-                    vk = int(event.vkCode)
-                    if vk == 0x10:
-                        vk = 0xA1 if event.scanCode == 0x36 else 0xA0
-                    elif vk == 0x11:
-                        vk = 0xA3 if event.flags & 0x01 else 0xA2
-                    elif vk == 0x12:
-                        vk = 0xA5 if event.flags & 0x01 else 0xA4
-                    name = ("Num Enter" if vk == 0x0D and event.flags & 0x01
-                            else VK_NAMES.get(vk))
-                    if name:
-                        if wparam in (0x0101, 0x0105):
-                            self.down_keys.discard(name)
-                        elif name not in self.down_keys:
-                            self.down_keys.add(name)
-                            self.events.put((name, time.perf_counter()))
-            return self.user32.CallNextHookEx(None, code, wparam, lparam)
-
-        self.hook_proc = HOOKPROC(callback)
-        self.hook = self.user32.SetWindowsHookExW(
-            13, self.hook_proc, kernel32.GetModuleHandleW(None), 0)
-        if not self.hook:
-            self.hook_proc = None
-            raise ctypes.WinError(ctypes.get_last_error())
-        LOG.info("Reactive keyboard hook installed")
+    def _key_pressed(self, name, started):
+        try:
+            self.events.put_nowait((name, started))
+        except queue.Full:
+            pass  # Never block the input thread behind a stalled render loop.
 
     def _remove_hook(self):
-        if self.hook:
-            self.user32.UnhookWindowsHookEx(self.hook)
-            self.hook = None
-            self.hook_proc = None
+        self.keyboard_input.stop()
+        self.hook = None
+        try:
+            while True:
+                self.events.get_nowait()
+        except queue.Empty:
+            pass
 
 
 

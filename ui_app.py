@@ -19,7 +19,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QDoubleSpinBox, QFrame,
     QDialog, QFileDialog, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
+    QMainWindow, QPushButton, QScrollArea, QSlider, QSpinBox, QStackedWidget,
     QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
@@ -29,6 +29,7 @@ from device_detection import detect_keyboards, preferred_known_keyboard
 from ui_controls import SurfaceButton, motion_duration
 from ui_select import SurfaceComboBox
 from ui_window import RoundedWindowFrame, WINDOW_RADIUS
+from ui_tray import TrayMenu
 from effects import CATEGORIES, EFFECTS, EFFECT_CATEGORY, EFFECT_IDS, MUSIC, REACTIVE, WIDTH_EFFECTS
 from layout import KEYCAPS, restore_v98_layout, set_keycaps
 
@@ -2543,15 +2544,7 @@ class MainWindow(QMainWindow):
             return
         self.tray = QSystemTrayIcon(QIcon(str(ICON)), self)
         self.tray.setToolTip("老必灯 · 键盘灯效工作室")
-        self.tray_menu = QMenu(self)
-        show_action = self.tray_menu.addAction("显示窗口")
-        show_action.triggered.connect(self.show_window)
-        self.tray_toggle_action = self.tray_menu.addAction("")
-        self.tray_toggle_action.triggered.connect(self._toggle_effect)
-        self.tray_menu.addSeparator()
-        quit_action = self.tray_menu.addAction("退出程序")
-        quit_action.triggered.connect(self.exit_app)
-        self.tray.setContextMenu(self.tray_menu)
+        self.tray_menu = TrayMenu(self, control_icon)
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
         LOG.info("System tray visible with show, toggle and exit actions")
@@ -2608,11 +2601,16 @@ class MainWindow(QMainWindow):
             pass
 
     def _tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+        if reason == QSystemTrayIcon.ActivationReason.Context:
+            self.tray_menu.set_active(self.engine.ripples_enabled)
+            self.tray_menu.popup()
+        elif reason in (QSystemTrayIcon.ActivationReason.Trigger,
                       QSystemTrayIcon.ActivationReason.DoubleClick):
             self.show_window()
 
     def show_window(self):
+        if hasattr(self, "tray_menu"):
+            self.tray_menu.hide()
         self.showNormal()
         self._window_frame.ensure_visible()
         self.raise_()
@@ -2722,10 +2720,11 @@ class MainWindow(QMainWindow):
             self._last_health_log = wall_now
             lit_keys = sum(any(channel for channel in rgb)
                            for rgb in self.engine.last_frame)
-            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s",
+            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s",
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
-                     lit_keys, self.engine.ripples_enabled)
+                     lit_keys, self.engine.ripples_enabled,
+                     "raw-background" if self.engine.keyboard_input.running else "idle")
         self._refresh_preview_frame()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
@@ -2768,8 +2767,8 @@ class MainWindow(QMainWindow):
         self.toggle_button.setText("暂停灯效" if active else "继续灯效")
         self.toggle_button.setIcon(control_icon(
             "pause" if active else "play", "#FFFFFF"))
-        if hasattr(self, "tray_toggle_action"):
-            self.tray_toggle_action.setText("暂停灯效" if active else "继续灯效")
+        if hasattr(self, "tray_menu"):
+            self.tray_menu.set_active(active)
 
     def _toggle_effect(self):
         active = not self.engine.ripples_enabled
@@ -3493,6 +3492,8 @@ class MainWindow(QMainWindow):
         if self.exiting:
             return
         self.exiting = True
+        if hasattr(self, "tray_menu"):
+            self.tray_menu.hide()
         self.frame_timer.stop()
         self.retry_timer.stop()
         self.mode_timer.stop()
