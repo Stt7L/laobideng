@@ -96,6 +96,12 @@ class RoundedWindowFrame(QObject):
         self._region_signature = None
         self._pending = False
         self._syncing = False
+        self._resizing = False
+        self._stack_dirty = True
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(16)
+        self._sync_timer.timeout.connect(self.sync)
         if self.shadow is not None:
             self.user32 = ctypes.WinDLL("user32", use_last_error=True)
             self.gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -121,11 +127,14 @@ class RoundedWindowFrame(QObject):
             if event.type() in (QEvent.Type.Resize, QEvent.Type.WindowStateChange):
                 # Apply the region before the new-size paint. A deferred old
                 # region would briefly expose desktop in the newly grown area.
-                self.sync()
+                self.sync(region_only=True)
+            if event.type() in (QEvent.Type.Show, QEvent.Type.WindowActivate,
+                                 QEvent.Type.WindowStateChange):
+                self._stack_dirty = True
             # Coalesce geometry/activation events from the same event-loop turn.
-            if not self._pending:
+            if not self._pending and not self._resizing:
                 self._pending = True
-                QTimer.singleShot(0, self.sync)
+                self._sync_timer.start()
         return False
 
     def content_visible(self):
@@ -142,16 +151,28 @@ class RoundedWindowFrame(QObject):
             self.user32.ShowWindow(int(self.window.winId()), 5)
             self.sync()
 
-    def sync(self):
+    def set_resizing(self, active):
+        self._resizing = bool(active)
+        if self.shadow is None:
+            return
+        if active:
+            self._sync_timer.stop()
+            self._pending = False
+            self.shadow.hide()
+        else:
+            self._stack_dirty = True
+            self.sync()
+
+    def sync(self, region_only=False):
         if self._syncing:
             return
         self._syncing = True
         try:
-            self._sync_window()
+            self._sync_window(region_only)
         finally:
             self._syncing = False
 
-    def _sync_window(self):
+    def _sync_window(self, region_only=False):
         self._pending = False
         if self.shadow is None:
             return
@@ -172,13 +193,13 @@ class RoundedWindowFrame(QObject):
         signature = (width, height, ratio, square)
         if signature != self._region_signature:
             if square:
-                succeeded = self.user32.SetWindowRgn(hwnd, None, True)
+                succeeded = self.user32.SetWindowRgn(hwnd, None, False)
             else:
                 # Leave one physical pixel for the antialiased companion edge.
                 radius = round(WINDOW_RADIUS * ratio)
                 region = self.gdi32.CreateRoundRectRgn(1, 1, width - 1, height - 1,
                                                       radius * 2, radius * 2)
-                succeeded = self.user32.SetWindowRgn(hwnd, region, True) if region else False
+                succeeded = self.user32.SetWindowRgn(hwnd, region, False) if region else False
                 if region and not succeeded:
                     self.gdi32.DeleteObject(region)
             if succeeded:
@@ -187,8 +208,10 @@ class RoundedWindowFrame(QObject):
                 LOG.warning("Could not apply custom window corners: %s", ctypes.get_last_error())
                 self.shadow.hide()
                 return
-        if square:
+        if square or self._resizing:
             self.shadow.hide()
+            return
+        if region_only:
             return
         margin = self.shadow.MARGIN
         geometry = window.frameGeometry().adjusted(-margin, -margin, margin, margin)
@@ -196,6 +219,9 @@ class RoundedWindowFrame(QObject):
             self.shadow.setGeometry(geometry)
         if not self.shadow.isVisible():
             self.shadow.show()
+            self._stack_dirty = True
         # Immediately behind this window, never above its controls or another
         # application; SWP_NOMOVE | NOSIZE | NOACTIVATE avoids stealing focus.
-        self.user32.SetWindowPos(int(self.shadow.winId()), hwnd, 0, 0, 0, 0, 0x0013)
+        if self._stack_dirty:
+            self.user32.SetWindowPos(int(self.shadow.winId()), hwnd, 0, 0, 0, 0, 0x0013)
+            self._stack_dirty = False

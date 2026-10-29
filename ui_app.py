@@ -1342,6 +1342,7 @@ class MainWindow(QMainWindow):
         self._window_frame = RoundedWindowFrame(self)
         self._last_preview_update = 0.0
         self._last_preview_signature = None
+        self._native_resizing = False
 
         self.frame_timer = QTimer(self)
         self.frame_timer.setInterval(33)
@@ -2226,20 +2227,25 @@ class MainWindow(QMainWindow):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _size_centered_cards(self):
+        current = self.page_stack.currentWidget()
         for card, scroll, limit in self._centered_cards:
+            if scroll is not current:
+                continue
             available = scroll.viewport().width() - 56
             if available > 0:
                 target = min(limit, available)
                 if card.width() != target:
                     card.setFixedWidth(target)
-        if hasattr(self, "effects_card"):
+        if hasattr(self, "effects_card") and self.page_stack.currentIndex() in (0, 1):
             self._adapt_workspace_layout()
 
     def _adapt_workspace_layout(self):
         width = self.effects_card.width()
         compact = width < 760
-        self.preview.setMinimumHeight(max(240, min(340,
-            round(62 + 270 * min(1, (self.preview.width() - 28) / 790)))))
+        preview_height = max(240, min(340,
+            round(62 + 270 * min(1, (self.preview.width() - 28) / 790))))
+        if self.preview.minimumHeight() != preview_height:
+            self.preview.setMinimumHeight(preview_height)
         signature = (compact, self.colors_card.width() < 800)
         if getattr(self, "_layout_signature", None) != signature:
             self._layout_signature = signature
@@ -2295,10 +2301,27 @@ class MainWindow(QMainWindow):
             self._position_quick_panel()
 
     def _finish_resize(self):
+        if getattr(self, "_native_resizing", False):
+            return
         for effect in self._shadowed_surfaces:
             effect.setEnabled(True)
         if self.page_stack.currentIndex() == 0:
             self.preview.update()
+
+    def nativeEvent(self, event_type, message):
+        native = ctypes.wintypes.MSG.from_address(int(message))
+        if native.message == 0x0231:  # WM_ENTERSIZEMOVE
+            self._native_resizing = True
+            if hasattr(self, "_window_frame"):
+                self._window_frame.set_resizing(True)
+            for effect in getattr(self, "_shadowed_surfaces", ()):
+                effect.setEnabled(False)
+        elif native.message == 0x0232:  # WM_EXITSIZEMOVE
+            self._native_resizing = False
+            if hasattr(self, "_window_frame"):
+                self._window_frame.set_resizing(False)
+            self._finish_resize()
+        return super().nativeEvent(event_type, message)
 
     def _position_quick_panel(self):
         panel = self.quick_panel
@@ -2693,19 +2716,18 @@ class MainWindow(QMainWindow):
         wall_now = time.time()
         tick_gap = wall_now - self._last_tick_wall
         self._last_tick_wall = wall_now
-        if tick_gap > 8.0 and not self.preview_mode:
+        if tick_gap > 8.0 and not self.preview_mode and not self.engine.stream_healthy:
             LOG.warning("Lighting timer paused for %.1f s; refreshing keyboard connection", tick_gap)
             self.engine.disconnect()
             if self.engine.effect in MUSIC:
-                self.engine.audio_meter.refresh()
+                self.engine.refresh_audio()
             self._set_status("正在恢复键盘连接", "paused")
             self.connection_detail.setText("电脑恢复运行，正在重新连接灯控接口")
             self._connect_device()
             if not self.engine.connected:
                 self.retry_timer.start()
             return
-        interval = (20 if self.engine.effect in MUSIC and
-                    self.engine.transport == "wired" else 33)
+        interval = 33  # Only preview/status are driven by this UI timer.
         if self.frame_timer.interval() != interval:
             self.frame_timer.setInterval(interval)
         try:
@@ -2720,11 +2742,12 @@ class MainWindow(QMainWindow):
             self._last_health_log = wall_now
             lit_keys = sum(any(channel for channel in rgb)
                            for rgb in self.engine.last_frame)
-            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s",
+            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s stream=%s frames=%s",
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
                      lit_keys, self.engine.ripples_enabled,
-                     "raw-background" if self.engine.keyboard_input.running else "idle")
+                     "raw-background" if self.engine.keyboard_input.running else "idle",
+                     self.engine.stream_healthy, self.engine._stream_frame_count)
         self._refresh_preview_frame()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter
@@ -2740,7 +2763,7 @@ class MainWindow(QMainWindow):
     def _refresh_preview_frame(self, now=None):
         """Refresh changed, visible frames independently of the device cadence."""
         now = time.monotonic() if now is None else now
-        if (not self._window_frame.content_visible() or
+        if (self._native_resizing or not self._window_frame.content_visible() or
                 self.page_stack.currentIndex() != 0 or not self.preview.isVisible() or
                 now - getattr(self, "_last_resize_at", 0) <= 0.12 or
                 now - self._last_preview_update < 1 / 30):
@@ -2973,7 +2996,7 @@ class MainWindow(QMainWindow):
             self.gallery_selection.setText("没有找到相符的灯效")
 
     def _refresh_audio_device(self):
-        self.engine.audio_meter.refresh()
+        self.engine.refresh_audio()
         self.music_status.setText("正在连接系统默认播放设备…")
 
     def _toggle_category(self, category):

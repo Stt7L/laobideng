@@ -305,7 +305,7 @@ def wireless_packet(frame):
 
 
 class LightingController:
-    """HID streaming and keyboard events; the UI owns its timer and lifecycle."""
+    """UI configuration with an independent renderer and HID streaming thread."""
 
     def __init__(self):
         self.handle = None
@@ -336,6 +336,10 @@ class LightingController:
         self.worker_displayed_frame = None
         self.worker_pending_events = []
         self.worker_error = None
+        self._stream_session = None
+        self._last_stream_write = 0.0
+        self._stream_frame_count = 0
+        self._audio_refresh = threading.Event()
         self.base = (255, 255, 255)
         self.accent = (0, 0, 0)
         self.brightness = 0.65
@@ -367,17 +371,17 @@ class LightingController:
             if transport == "wired":
                 self._write_report(bytes([0x04, 0x8C, 0x00, 0x0B, 0x30, 0x50, 0x01]
                                          + [0] * 57))
-            self.last_frame = self.frame(time.perf_counter())
-            if transport == "wireless":
-                self.worker_error = None
-                self.worker_stop = threading.Event()
-                self.worker_displayed_frame = None
-                self.worker_pending_events.clear()
-                self.worker = threading.Thread(target=self._wireless_loop,
-                                               args=(self.worker_stop, handle),
-                                               name="V98Pro-2.4G", daemon=True)
-                self.worker.start()
-            self.write_frame(self.last_frame)
+            self.worker_error = None
+            self.worker_stop = threading.Event()
+            self.worker_displayed_frame = None
+            self._last_stream_write = 0.0
+            self._stream_frame_count = 0
+            self._stream_session = {"reset": None}
+            self.worker = threading.Thread(
+                target=self._stream_loop,
+                args=(self.worker_stop, handle, transport, self._stream_session),
+                name=f"Lighting-stream-{transport}", daemon=True)
+            self.worker.start()
             if self.ripples_enabled and self.effect in REACTIVE:
                 self._install_hook()
         except Exception:
@@ -389,10 +393,12 @@ class LightingController:
         if self.worker is not None:
             self.worker_stop.set()
             self.worker.join(timeout=0.5)
+            # The writer owns its captured HANDLE until it has stopped. Never
+            # close/reuse it underneath a delayed WriteFile or a reconnect.
             self.worker = None
-        if self.handle is not None:
+        elif self.handle is not None:
             kernel32.CloseHandle(self.handle)
-            self.handle = None
+        self.handle = None
         self.transport = None
         self.worker_displayed_frame = None
         self.worker_pending_events.clear()
@@ -400,13 +406,19 @@ class LightingController:
         self.down_keys.clear()
 
     def close(self):
-        if self.connected:
+        had_worker = self.worker is not None
+        if self.worker is not None:
+            self._stream_session["reset"] = [self.base_color()] * MAX_LED
+        elif self.connected:
             try:
                 self.write_frame([self.base_color()] * MAX_LED)
             except OSError:
                 pass
         self.disconnect()
-        self.audio_meter.close()
+        # A running stream owns Core Audio's COM objects. Its finally block
+        # releases them on that same thread, even after a bounded join.
+        if not had_worker and self._stream_session is None:
+            self.audio_meter.close()
 
     def set_active(self, active):
         if active and (self.connected or self.preview_events) and self.effect in REACTIVE:
@@ -421,7 +433,7 @@ class LightingController:
         self.audio_trace_value = 0.0
         self.audio_seen_beat = self.audio_meter.beat_serial
         self.music_frame = None
-        if not active:
+        if not active and self.worker is None:
             self.audio_meter.close()
             self.audio_level = 0.0
         self.down_keys.clear()
@@ -439,7 +451,7 @@ class LightingController:
         self.audio_trace_value = 0.0
         self.audio_seen_beat = self.audio_meter.beat_serial
         self.music_frame = None
-        if effect not in MUSIC:
+        if effect not in MUSIC and self.worker is None:
             self.audio_meter.close()
             self.audio_level = 0.0
         with self.worker_lock:
@@ -466,67 +478,113 @@ class LightingController:
     def write_frame(self, frame):
         if self.handle is None:
             return
-        if self.transport == "wireless":
-            with self.worker_lock:
-                self.worker_frame = list(frame)
+        if self.worker is not None:
+            # Connected streams render their own frames. UI refreshes never
+            # send reports or replace an in-flight frame.
             return
         for packet in rgb_packet(frame):
             self._write_report(packet)
 
     def preview_frame(self):
-        if self.transport == "wireless":
-            with self.worker_lock:
-                return self.worker_displayed_frame or self.last_frame
-        return self.last_frame
+        return self.worker_displayed_frame or self.last_frame
 
-    def _wireless_loop(self, stop, handle):
-        wireless_ripples = []
-        while not stop.is_set():
-            with self.worker_lock:
-                frame = self.worker_frame
-                self.worker_frame = None
-                pending = self.worker_pending_events
-                self.worker_pending_events = []
-            if frame is None and not pending:
-                stop.wait(0.01)
-                continue
-            try:
-                if self.ripples_enabled and self.effect in REACTIVE:
-                    now = time.perf_counter()
-                    wireless_ripples.extend((name, now) for name in pending)
-                    lifetime = (ripple_lifetime(self.speed)
-                                if self.effect == "ripple"
-                                else reactive_lifetime(self.speed, self.effect))
-                    wireless_ripples = [event for event in wireless_ripples
-                                        if now - event[1] < lifetime][-64:]
-                    frame = render(self.effect, now, self.base, self.accent,
-                                   self.brightness, self.speed,
-                                   wireless_ripples, self.ripple_width,
-                                   base_brightness=self.base_brightness,
-                                   accent_brightness=self.accent_brightness,
-                                   ecg_background=self.ecg_background)
-                else:
-                    wireless_ripples.clear()
-                    if frame is None:
-                        frame = [self.base_color()] * MAX_LED
-                packets = wireless_packet(frame)
-                # Dynamic partial commits are not stable on this receiver;
-                # send all 16 reports for every committed lighting frame.
-                for packet in packets:
-                    if stop.is_set():
-                        return
-                    self._write_report(packet, handle)
-                    # Event.wait() rounds short timeouts to roughly 15.6 ms
-                    # on this Windows host. sleep() uses the high resolution
-                    # timer; the pause also lets the receiver accept reports.
-                    time.sleep(WIRELESS_PACKET_DELAY)
-                with self.worker_lock:
-                    if self.worker_stop is stop:
-                        self.worker_displayed_frame = frame
-            except OSError as error:
+    @property
+    def stream_healthy(self):
+        return bool(self.worker and self.worker.is_alive() and not self.worker_error and
+                    time.perf_counter() - self._last_stream_write < 2.0)
+
+    def refresh_audio(self):
+        if self._stream_session is not None:
+            self._audio_refresh.set()
+        else:
+            self.audio_meter.refresh()
+
+    def _stream_config(self):
+        # Each field is an immutable value or a copied set. The worker keeps
+        # all animation histories private; UI setters never clear its buffers.
+        names = ("effect", "ripples_enabled", "base", "accent", "brightness",
+                 "base_brightness", "accent_brightness", "ecg_background",
+                 "speed", "ripple_width")
+        config = {name: getattr(self, name) for name in names}
+        config["custom_heart_keys"] = frozenset(self.custom_heart_keys)
+        config["custom_canvas_keys"] = frozenset(self.custom_canvas_keys)
+        return config
+
+    def _stream_packets(self, frame, handle, transport, stop=None):
+        packets = wireless_packet(frame) if transport == "wireless" else rgb_packet(frame)
+        for packet in packets:
+            if stop is not None and stop.is_set():
+                return False
+            self._write_report(packet, handle)
+            if transport == "wireless":
+                time.sleep(WIRELESS_PACKET_DELAY)
+        return True
+
+    def _stream_loop(self, stop, handle, transport, session):
+        renderer = None
+        failed = False
+        try:
+            # Construct and use audio on this thread; fallback Core Audio
+            # pointers must never migrate between COM apartments.
+            renderer = LightingController()
+            if self.worker_stop is stop:
+                self.audio_meter = renderer.audio_meter
+            LOG.info("Independent lighting stream started: %s", transport)
+            deadline = time.perf_counter()
+            while not stop.is_set():
+                config = self._stream_config()
+                if config["effect"] != renderer.effect:
+                    renderer.set_effect(config["effect"])
+                if config["ripples_enabled"] != renderer.ripples_enabled:
+                    renderer.set_active(config["ripples_enabled"])
+                for name, value in config.items():
+                    setattr(renderer, name, value)
+                if self._audio_refresh.is_set():
+                    self._audio_refresh.clear()
+                    renderer.audio_meter.refresh()
+                now = time.perf_counter()
+                try:
+                    while True:
+                        name, started = self.events.get_nowait()
+                        renderer.events.put_nowait((name, now if transport == "wireless" else started))
+                except queue.Empty:
+                    pass
+                renderer.tick(now)
+                frame = renderer.last_frame
+                if not self._stream_packets(frame, handle, transport, stop):
+                    break
                 if self.worker_stop is stop:
-                    self.worker_error = error
-                return
+                    self.last_frame = frame
+                    self.worker_displayed_frame = frame
+                    self.audio_level = renderer.audio_level
+                    self._last_stream_write = time.perf_counter()
+                    self._stream_frame_count += 1
+                interval = .02 if config["effect"] in MUSIC and transport == "wired" else .033
+                deadline += interval
+                remaining = deadline - time.perf_counter()
+                if remaining > 0:
+                    stop.wait(remaining)
+                else:
+                    # Never burst stale frames after a slow send or a pause.
+                    deadline = time.perf_counter()
+        except Exception as error:
+            failed = True
+            if self.worker_stop is stop and not stop.is_set():
+                self.worker_error = error if isinstance(error, OSError) else OSError(str(error))
+                LOG.exception("Independent lighting stream interrupted")
+        finally:
+            try:
+                if session["reset"] is not None and not failed:
+                    self._stream_packets(session["reset"], handle, transport)
+            except OSError:
+                pass
+            try:
+                if renderer is not None:
+                    renderer.audio_meter.close()
+            except Exception:
+                LOG.exception("Lighting stream audio cleanup failed")
+            finally:
+                kernel32.CloseHandle(handle)
 
     def tick(self, now=None):
         if self.connected and self.worker_error:
@@ -542,6 +600,8 @@ class LightingController:
                 self._install_hook()
             except OSError as error:
                 LOG.warning("Background keyboard input retry failed: %s", error)
+        if self.worker is not None:
+            return  # UI timer reads snapshots; hardware rendering is independent.
         if self.ripples_enabled and self.effect in MUSIC:
             self.audio_level = self.audio_meter.sample()
             if self.audio_meter.mode == "spectrum":
