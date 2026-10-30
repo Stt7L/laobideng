@@ -1,4 +1,4 @@
-#define AppVersion "1.5.9"
+#define AppVersion "1.5.10"
 #define AppName "老必灯"
 
 [Setup]

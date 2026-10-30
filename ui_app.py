@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend import LightingController, bluetooth_keyboard_present
+from app_privileges import is_elevated, request_elevated_restart
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
 from device_detection import detect_keyboards, preferred_known_keyboard
 from ui_controls import SurfaceButton, motion_duration
@@ -2135,6 +2136,18 @@ class MainWindow(QMainWindow):
         self.startup_status = QLabel()
         self.startup_status.setObjectName("hint")
         startup_layout.addWidget(self.startup_status)
+        self.game_compatibility_status = QLabel(
+            "本次已使用管理员权限，可与管理员运行的游戏接收按键。" if is_elevated() else
+            "游戏以管理员权限运行时，可使用游戏兼容启动。仅本次提权，需系统确认；重启时灯光会短暂停顿。")
+        self.game_compatibility_status.setObjectName("muted")
+        self.game_compatibility_status.setWordWrap(True)
+        startup_layout.addWidget(self.game_compatibility_status)
+        self.game_compatibility_button = SurfaceButton("游戏兼容启动")
+        self.game_compatibility_button.setObjectName("secondary")
+        self.game_compatibility_button.setIcon(control_icon("power"))
+        self.game_compatibility_button.setEnabled(not self.preview_mode and not is_elevated())
+        self.game_compatibility_button.clicked.connect(self._restart_for_game)
+        startup_layout.addWidget(self.game_compatibility_button)
         startup_card.setMaximumWidth(960)
         self._refresh_startup_control()
         author_card, author_layout = self._card("关于老必灯")
@@ -2523,6 +2536,19 @@ class MainWindow(QMainWindow):
         self._refresh_startup_control()
         LOG.info("Start with Windows: %s", enabled)
 
+    def _restart_for_game(self):
+        if self.preview_mode or is_elevated():
+            return
+        self._save_settings()
+        try:
+            request_elevated_restart()
+        except OSError as error:
+            self.game_compatibility_status.setText(str(error))
+            LOG.info("Game compatibility restart not confirmed")
+            return
+        LOG.info("Game compatibility restart approved; handing off after clean shutdown")
+        self.exit_app()
+
     def _slider_row(self, parent, label, low, high, value, unit):
         container = QWidget()
         row = QHBoxLayout(container)
@@ -2742,12 +2768,13 @@ class MainWindow(QMainWindow):
             self._last_health_log = wall_now
             lit_keys = sum(any(channel for channel in rgb)
                            for rgb in self.engine.last_frame)
-            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s stream=%s frames=%s",
+            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s stream=%s frames=%s keys=[%s]",
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
                      lit_keys, self.engine.ripples_enabled,
                      "raw-background" if self.engine.keyboard_input.running else "idle",
-                     self.engine.stream_healthy, self.engine._stream_frame_count)
+                     self.engine.stream_healthy, self.engine._stream_frame_count,
+                     self.engine.keyboard_input.diagnostics())
         self._refresh_preview_frame()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
             meter = self.engine.audio_meter

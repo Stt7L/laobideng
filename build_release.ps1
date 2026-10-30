@@ -40,5 +40,5 @@ if (Test-Path -LiteralPath $shadowIcu) {
 }
 & $compilerExe 'installer.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
-Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.5.9.exe') |
+Get-Item -LiteralPath (Join-Path $projectRoot 'release\老必灯-Setup-1.5.10.exe') |
   Select-Object FullName, Length, LastWriteTime

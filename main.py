@@ -5,6 +5,10 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from app_privileges import is_elevated, wait_for_previous_instance
+
+if __name__ == "__main__":
+    wait_for_previous_instance(sys.argv)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "老必灯"
@@ -18,6 +22,7 @@ app_logger.addHandler(handler)
 app_logger.setLevel(logging.INFO)
 app_logger.propagate = False
 app_logger.info("Application starting: pid=%s log=%s", os.getpid(), log_path)
+app_logger.info("Application permissions: elevated=%s", is_elevated())
 
 
 def log_unhandled(error_type, error, trace):

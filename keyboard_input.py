@@ -1,7 +1,8 @@
 """Read physical keyboard transitions on an independent Windows message loop.
 
-RIDEV_INPUTSINK observes background input without consuming game input or
-installing a low-level hook. Only transient lighting events leave this thread.
+Raw Input supplies physical keys; a thread-local key-state sampler covers
+foreground applications that stop delivering background packets. Neither path
+consumes or injects input. Only transient lighting events leave this thread.
 """
 
 import ctypes
@@ -11,6 +12,12 @@ import threading
 import time
 
 LOG = logging.getLogger("vgn-ripple")
+# These physical keys share asynchronous virtual-key states. Prefer the raw
+# name when it is available; the fallback alone cannot distinguish them.
+POLL_ALIASES = {"Num Enter": "Enter", "Num 7": "Home", "Num 8": "Up Arrow",
+                "Num 9": "Page Up", "Num 4": "Left Arrow", "Num 6": "Right Arrow",
+                "Num 1": "End", "Num 2": "Down Arrow", "Num 3": "Page Down",
+                "Num 0": "Insert", "Num .": "Del"}
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
                             wintypes.WPARAM, wintypes.LPARAM)
 
@@ -76,6 +83,14 @@ class KeyboardInput:
         self.ready = threading.Event()
         self.stopping = threading.Event()
         self.held = set()
+        self._raw_at = {}
+        self._sampled_down = set()
+        self._fallback_at = {}
+        self.raw_presses = 0
+        self.fallback_presses = 0
+        self.last_press_at = 0.0
+        self._poll_keys = tuple((vk, name) for vk, name in names.items()
+                                if vk not in (0x10, 0x11, 0x12))
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         u = self.user32
@@ -100,6 +115,11 @@ class KeyboardInput:
         u.DispatchMessageW.restype = ctypes.c_ssize_t
         u.DestroyWindow.argtypes = [wintypes.HWND]
         u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        u.SetTimer.argtypes = [wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p]
+        u.SetTimer.restype = ctypes.c_size_t
+        u.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
+        u.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        u.GetAsyncKeyState.restype = ctypes.c_short
         self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         self.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
@@ -137,14 +157,65 @@ class KeyboardInput:
         if name is None:
             return
         key = (device, name)
+        alias = POLL_ALIASES.get(name, name)
         if flags & 1:
             self.held.discard(key)
+            self._raw_at.pop(key, None)
+            self._sampled_down.discard(name)
+            self._fallback_at.pop(name, None)
+            if alias != name:
+                self._sampled_down.discard(alias)
+                self._fallback_at.pop(alias, None)
         elif key not in self.held:
+            now = time.perf_counter()
             self.held.add(key)
-            self.on_press(name, time.perf_counter())
+            self._raw_at[key] = now
+            self.raw_presses += 1
+            # Raw packets and the sampler can describe the same transition in
+            # either order. Preserve raw per-device presses, but never draw a
+            # second wave for one already supplied by the sampler.
+            fallback_at = self._fallback_at.pop(name, None)
+            if fallback_at is None and alias != name:
+                fallback_at = self._fallback_at.pop(alias, None)
+            if fallback_at is None or (name not in self._sampled_down and alias not in self._sampled_down and now - fallback_at > .06):
+                self._emit(name, now)
             # Pause often has no break packet. Do not latch it forever.
             if name == "Pause":
                 self.held.discard(key)
+                self._raw_at.pop(key, None)
+
+    def _emit(self, name, now):
+        self.last_press_at = now
+        self.on_press(name, now)
+
+    def _sample_keys(self):
+        if self.stopping.is_set():
+            return
+        now = time.perf_counter()
+        # Use only the current-down high bit. The low "pressed since" bit is
+        # shared with other applications and is not a reliable event source.
+        down = {name for vk, name in self._poll_keys
+                if self.user32.GetAsyncKeyState(vk) & 0x8000}
+        raw_down = {name for _device, name in self.held}
+        for name, alias in POLL_ALIASES.items():
+            if name in raw_down and alias in down:
+                down.remove(alias)
+                down.add(name)
+        for name in down - self._sampled_down - raw_down:
+            self.fallback_presses += 1
+            self._fallback_at[name] = now
+            self._emit(name, now)
+        self._sampled_down = down
+        # A foreground switch can lose a break packet. Recover stale latches
+        # after a grace period; never repeatedly light a genuinely held key.
+        for key in tuple(self.held):
+            if key[1] not in down and now - self._raw_at.get(key, now) > .10:
+                self.held.discard(key)
+                self._raw_at.pop(key, None)
+
+    def diagnostics(self):
+        age = time.perf_counter() - self.last_press_at if self.last_press_at else -1
+        return f"raw={self.raw_presses},fallback={self.fallback_presses},last={age:.1f}s"
 
     def _window_proc(self, hwnd, message, wparam, lparam):
         try:
@@ -162,6 +233,10 @@ class KeyboardInput:
                                 self.feed(packet.header.device, k.vk, k.scan, k.flags)
             elif message == 0x00FE and wparam == 2:  # Device removal clears held keys.
                 self.held = {key for key in self.held if key[0] != lparam}
+                self._raw_at = {key: at for key, at in self._raw_at.items() if key[0] != lparam}
+            elif message == 0x0113 and wparam == 1:  # WM_TIMER on the receiver thread.
+                self._sample_keys()
+                return 0
             elif message == 0x0010:
                 self.user32.DestroyWindow(hwnd)
                 return 0
@@ -189,8 +264,10 @@ class KeyboardInput:
             device = _RawDevice(1, 6, 0x00000100 | 0x00002000, self.hwnd)
             if not self.user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device)):
                 raise ctypes.WinError(ctypes.get_last_error())
+            if not self.user32.SetTimer(self.hwnd, 1, 15, None):
+                raise ctypes.WinError(ctypes.get_last_error())
             self.ready.set()
-            LOG.info("Background keyboard input registered on dedicated thread")
+            LOG.info("Background keyboard input registered: raw + key-state fallback on dedicated thread")
             message = wintypes.MSG()
             while not self.stopping.is_set():
                 result = self.user32.GetMessageW(ctypes.byref(message), None, 0, 0)
@@ -205,11 +282,15 @@ class KeyboardInput:
             LOG.exception("Background keyboard input stopped unexpectedly")
         finally:
             if self.hwnd:
+                self.user32.KillTimer(self.hwnd, 1)
                 device = _RawDevice(1, 6, 1, None)
                 self.user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
                 self.user32.DestroyWindow(self.hwnd)
             self.hwnd = None
             self.held.clear()
+            self._raw_at.clear()
+            self._sampled_down.clear()
+            self._fallback_at.clear()
             if registered:
                 self.user32.UnregisterClassW(class_name, instance)
             self.ready.set()

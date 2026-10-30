@@ -20,6 +20,12 @@ from ui_select import SurfaceComboBox
 from ui_window import WINDOW_RADIUS, WINDOW_INSET, SIDEBAR_RADIUS
 
 
+def wait_for(predicate, timeout=1.2):
+    deadline = time.perf_counter() + timeout
+    while not predicate() and time.perf_counter() < deadline:
+        QTest.qWait(20)
+
+
 def run(output, interactive=False):
     app = QApplication([sys.argv[0], "-platform", "windows:fontengine=freetype"])
     app.setStyle("Fusion")
@@ -65,10 +71,12 @@ def run(output, interactive=False):
         window._show_section(2)
         slider = window.brightness_slider
         slider.setValue(0)
-        QTest.qWait(240)
+        # Native timer delivery can be coalesced on a busy Windows desktop;
+        # wait for completion rather than assuming a fixed number of ticks.
+        wait_for(lambda: slider._visual_fraction == 0)
         check(slider._visual_fraction == 0, "slider zero endpoint")
         slider.setValue(1000)
-        QTest.qWait(240)
+        wait_for(lambda: slider._visual_fraction == 1)
         check(slider._visual_fraction == 1, "slider full endpoint")
         QTest.mousePress(slider, Qt.MouseButton.LeftButton,
                          pos=QPoint(slider.EDGE, slider.height() // 2))

@@ -696,8 +696,8 @@ class LightingController:
         return self.music_frame
 
     def _install_hook(self):
-        # Keep the lifecycle entry point for existing UI callers. No low-level
-        # hook is installed: raw input has its own non-UI message pump.
+        # Keep the lifecycle entry point for existing UI callers. Raw Input
+        # and the key-state fallback share their own non-UI message pump.
         self.keyboard_input.start()
         self.hook = self.keyboard_input.hwnd
 
