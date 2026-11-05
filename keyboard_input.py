@@ -12,6 +12,7 @@ import threading
 import time
 
 LOG = logging.getLogger("vgn-ripple")
+WM_INPUT_WAKE = 0x8001
 # These physical keys share asynchronous virtual-key states. Prefer the raw
 # name when it is available; the fallback alone cannot distinguish them.
 POLL_ALIASES = {"Num Enter": "Enter", "Num 7": "Home", "Num 8": "Up Arrow",
@@ -83,6 +84,19 @@ class KeyboardInput:
         self.ready = threading.Event()
         self.stopping = threading.Event()
         self.held = set()
+        self.enabled = False
+        self._state_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self.last_pump_at = 0.0
+        self.last_sample_at = 0.0
+        self._last_maintenance = 0.0
+        self._last_registration_check = 0.0
+        self._wake_sent_at = 0.0
+        self.repairs = 0
+        self.restarts = 0
+        self.wakes = 0
+        self.input_errors = 0
+        self._last_packet_error = 0.0
         self._raw_at = {}
         self._sampled_down = set()
         self._fallback_at = {}
@@ -120,6 +134,9 @@ class KeyboardInput:
         u.KillTimer.argtypes = [wintypes.HWND, ctypes.c_size_t]
         u.GetAsyncKeyState.argtypes = [ctypes.c_int]
         u.GetAsyncKeyState.restype = ctypes.c_short
+        u.GetRegisteredRawInputDevices.argtypes = [ctypes.POINTER(_RawDevice),
+                                                  ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+        u.GetRegisteredRawInputDevices.restype = wintypes.UINT
         self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         self.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 
@@ -128,6 +145,11 @@ class KeyboardInput:
         return bool(self.thread and self.thread.is_alive() and self.hwnd and not self.stopping.is_set())
 
     def start(self):
+        with self._lifecycle_lock:
+            self.enabled = True
+            self._start_receiver()
+
+    def _start_receiver(self):
         if self.running:
             return
         if self.thread and self.thread.is_alive():
@@ -138,19 +160,101 @@ class KeyboardInput:
         self.thread = threading.Thread(target=self._run, name="Lighting-keyboard-input", daemon=True)
         self.thread.start()
         if not self.ready.wait(1.5):
-            self.stop()
+            self._stop_receiver()
             raise OSError("Keyboard input initialization timed out")
         if self.error:
             raise OSError("Keyboard input unavailable") from self.error
 
     def stop(self):
+        with self._lifecycle_lock:
+            self.enabled = False
+            self._stop_receiver()
+
+    def _stop_receiver(self):
         self.stopping.set()
         if self.hwnd:
             self.user32.PostMessageW(self.hwnd, 0x0010, 0, 0)
         if self.thread and self.thread is not threading.current_thread():
             self.thread.join(timeout=.25)
 
+    def maintain(self, now=None):
+        """Called by the lighting worker, even when the UI is hidden/stalled."""
+        now = time.perf_counter() if now is None else now
+        if not self.enabled:
+            return
+        # A stuck native message queue must not stop both input paths. The
+        # shared state lock merges this backup sample with the native timer.
+        if now - self.last_sample_at > .05:
+            self._sample_keys()
+        if now - self._last_maintenance < 1:
+            return
+        with self._lifecycle_lock:
+            if not self.enabled:
+                return
+            self._last_maintenance = now
+            if self.running and now - self.last_pump_at < 2:
+                self._wake_sent_at = 0.0
+                return
+            if self.thread and self.thread.is_alive():
+                if not self._wake_sent_at:
+                    self._wake_sent_at = now
+                    self.user32.PostMessageW(self.hwnd, WM_INPUT_WAKE, 0, 0)
+                    LOG.warning("Keyboard message heartbeat stale; requesting receiver wake")
+                    return
+                if now - self._wake_sent_at < 2:
+                    return
+                self._stop_receiver()
+                if self.thread.is_alive():
+                    self._wake_sent_at = now
+                    LOG.warning("Keyboard receiver did not stop; retaining backup sampling without duplicate receiver")
+                    return
+            self.restarts += 1
+            self._wake_sent_at = 0.0
+            LOG.warning("Restarting keyboard receiver from lighting worker")
+            self._start_receiver()
+
+    def _registration_matches(self):
+        count = wintypes.UINT()
+        u = self.user32
+        size = ctypes.sizeof(_RawDevice)
+        u.GetRegisteredRawInputDevices(None, ctypes.byref(count), size)
+        if not count.value:
+            return False
+        devices = (_RawDevice * count.value)()
+        result = u.GetRegisteredRawInputDevices(devices, ctypes.byref(count), size)
+        if result == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return any(d.page == 1 and d.usage == 6 and d.target == self.hwnd and
+                   d.flags & 0x100 and not d.flags & 0x30 for d in devices[:result])
+
+    def _maintain_registration(self, force=False):
+        now = time.perf_counter()
+        if not force and now - self._last_registration_check < 5:
+            return
+        self._last_registration_check = now
+        if self._registration_matches():
+            return
+        device = _RawDevice(1, 6, 0x100 | 0x2000, self.hwnd)
+        if not self.user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        self.repairs += 1
+        LOG.warning("Restored missing background keyboard registration")
+
+    def _pulse(self):
+        now = time.perf_counter()
+        if self.last_pump_at and now - self.last_pump_at > 2:
+            with self._state_lock:
+                self.held.clear()
+                self._raw_at.clear()
+                self._sampled_down.clear()
+                self._fallback_at.clear()
+        self.last_pump_at = now
+
     def feed(self, device, vk, scan, flags):
+        with self._state_lock:
+            self._feed_locked(device, vk, scan, flags)
+
+    def _feed_locked(self, device, vk, scan, flags):
         if self.stopping.is_set():
             return
         name = key_name(vk, scan, flags, self.names)
@@ -189,9 +293,14 @@ class KeyboardInput:
         self.on_press(name, now)
 
     def _sample_keys(self):
-        if self.stopping.is_set():
+        with self._state_lock:
+            self._sample_keys_locked()
+
+    def _sample_keys_locked(self):
+        if self.stopping.is_set() and not self.enabled:
             return
         now = time.perf_counter()
+        self.last_sample_at = now
         # Use only the current-down high bit. The low "pressed since" bit is
         # shared with other applications and is not a reliable event source.
         down = {name for vk, name in self._poll_keys
@@ -214,8 +323,13 @@ class KeyboardInput:
                 self._raw_at.pop(key, None)
 
     def diagnostics(self):
-        age = time.perf_counter() - self.last_press_at if self.last_press_at else -1
-        return f"raw={self.raw_presses},fallback={self.fallback_presses},last={age:.1f}s"
+        now = time.perf_counter()
+        age = now - self.last_press_at if self.last_press_at else -1
+        pump = now - self.last_pump_at if self.last_pump_at else -1
+        sample = now - self.last_sample_at if self.last_sample_at else -1
+        return (f"raw={self.raw_presses},fallback={self.fallback_presses},last={age:.1f}s,"
+                f"pump={pump:.2f}s,sample={sample:.2f}s,repairs={self.repairs},"
+                f"restarts={self.restarts},wakes={self.wakes},errors={self.input_errors}")
 
     def _window_proc(self, hwnd, message, wparam, lparam):
         try:
@@ -232,10 +346,20 @@ class KeyboardInput:
                                 k = packet.keyboard
                                 self.feed(packet.header.device, k.vk, k.scan, k.flags)
             elif message == 0x00FE and wparam == 2:  # Device removal clears held keys.
-                self.held = {key for key in self.held if key[0] != lparam}
-                self._raw_at = {key: at for key, at in self._raw_at.items() if key[0] != lparam}
+                with self._state_lock:
+                    self.held = {key for key in self.held if key[0] != lparam}
+                    self._raw_at = {key: at for key, at in self._raw_at.items() if key[0] != lparam}
             elif message == 0x0113 and wparam == 1:  # WM_TIMER on the receiver thread.
+                self._pulse()
                 self._sample_keys()
+                self._maintain_registration()
+                return 0
+            elif message == WM_INPUT_WAKE:
+                self.wakes += 1
+                self._pulse()
+                if not self.user32.SetTimer(hwnd, 1, 15, None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                self._maintain_registration(force=True)
                 return 0
             elif message == 0x0010:
                 self.user32.DestroyWindow(hwnd)
@@ -244,7 +368,11 @@ class KeyboardInput:
                 self.user32.PostQuitMessage(0)
                 return 0
         except Exception:
-            LOG.exception("Keyboard input packet could not be processed")
+            self.input_errors += 1
+            now = time.perf_counter()
+            if now - self._last_packet_error > 5:
+                self._last_packet_error = now
+                LOG.exception("Keyboard input packet could not be processed")
         return self.user32.DefWindowProcW(hwnd, message, wparam, lparam)
 
     def _run(self):
@@ -266,6 +394,8 @@ class KeyboardInput:
                 raise ctypes.WinError(ctypes.get_last_error())
             if not self.user32.SetTimer(self.hwnd, 1, 15, None):
                 raise ctypes.WinError(ctypes.get_last_error())
+            self._pulse()
+            self._last_registration_check = time.perf_counter()
             self.ready.set()
             LOG.info("Background keyboard input registered: raw + key-state fallback on dedicated thread")
             message = wintypes.MSG()
@@ -284,13 +414,18 @@ class KeyboardInput:
             if self.hwnd:
                 self.user32.KillTimer(self.hwnd, 1)
                 device = _RawDevice(1, 6, 1, None)
-                self.user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
+                try:
+                    if self._registration_matches():
+                        self.user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(device))
+                except OSError:
+                    LOG.exception("Keyboard registration cleanup could not be checked")
                 self.user32.DestroyWindow(self.hwnd)
             self.hwnd = None
-            self.held.clear()
-            self._raw_at.clear()
-            self._sampled_down.clear()
-            self._fallback_at.clear()
+            with self._state_lock:
+                self.held.clear()
+                self._raw_at.clear()
+                self._sampled_down.clear()
+                self._fallback_at.clear()
             if registered:
                 self.user32.UnregisterClassW(class_name, instance)
             self.ready.set()

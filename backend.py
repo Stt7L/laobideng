@@ -339,6 +339,9 @@ class LightingController:
         self._stream_session = None
         self._last_stream_write = 0.0
         self._stream_frame_count = 0
+        self._stream_event_count = 0
+        self._stream_event_lag = 0.0
+        self._last_input_warning = 0.0
         self._audio_refresh = threading.Event()
         self.base = (255, 255, 255)
         self.accent = (0, 0, 0)
@@ -376,6 +379,8 @@ class LightingController:
             self.worker_displayed_frame = None
             self._last_stream_write = 0.0
             self._stream_frame_count = 0
+            self._stream_event_count = 0
+            self._stream_event_lag = 0.0
             self._stream_session = {"reset": None}
             self.worker = threading.Thread(
                 target=self._stream_loop,
@@ -543,10 +548,22 @@ class LightingController:
                     self._audio_refresh.clear()
                     renderer.audio_meter.refresh()
                 now = time.perf_counter()
+                if config["ripples_enabled"] and config["effect"] in REACTIVE:
+                    try:
+                        self.keyboard_input.maintain(now)
+                    except OSError as error:
+                        if now - self._last_input_warning > 5:
+                            self._last_input_warning = now
+                            LOG.warning("Background input maintenance failed; lighting continues: %s", error)
+                now = time.perf_counter()  # Recovery may have waited for a receiver to stop.
+                event_count = 0
+                event_lag = 0.0
                 try:
-                    while True:
+                    for _ in range(1024):
                         name, started = self.events.get_nowait()
                         renderer.events.put_nowait((name, now if transport == "wireless" else started))
+                        event_count += 1
+                        event_lag = max(event_lag, max(0.0, now - started))
                 except queue.Empty:
                     pass
                 renderer.tick(now)
@@ -559,6 +576,9 @@ class LightingController:
                     self.audio_level = renderer.audio_level
                     self._last_stream_write = time.perf_counter()
                     self._stream_frame_count += 1
+                    self._stream_event_count += event_count
+                    if event_count:
+                        self._stream_event_lag = event_lag
                 interval = .02 if config["effect"] in MUSIC and transport == "wired" else .033
                 deadline += interval
                 remaining = deadline - time.perf_counter()

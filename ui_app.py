@@ -2768,12 +2768,13 @@ class MainWindow(QMainWindow):
             self._last_health_log = wall_now
             lit_keys = sum(any(channel for channel in rgb)
                            for rgb in self.engine.last_frame)
-            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s stream=%s frames=%s keys=[%s]",
+            LOG.info("Lighting health: connected=%s transport=%s effect=%s audio=%s level=%.3f lit=%s active=%s input=%s stream=%s frames=%s rendered_events=%s event_lag=%.3fs keys=[%s]",
                      self.engine.connected, self.engine.transport, self.engine.effect,
                      self.engine.audio_meter.mode, self.engine.audio_level,
                      lit_keys, self.engine.ripples_enabled,
                      "raw-background" if self.engine.keyboard_input.running else "idle",
                      self.engine.stream_healthy, self.engine._stream_frame_count,
+                     self.engine._stream_event_count, self.engine._stream_event_lag,
                      self.engine.keyboard_input.diagnostics())
         self._refresh_preview_frame()
         if self.gallery_category == "music" or self.engine.effect == "custom_ecg":
