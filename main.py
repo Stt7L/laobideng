@@ -21,7 +21,7 @@ app_logger = logging.getLogger("vgn-ripple")
 app_logger.addHandler(handler)
 app_logger.setLevel(logging.INFO)
 app_logger.propagate = False
-app_logger.info("Application starting: version=1.5.11 pid=%s log=%s", os.getpid(), log_path)
+app_logger.info("Application starting: version=1.5.12 pid=%s log=%s", os.getpid(), log_path)
 app_logger.info("Application permissions: elevated=%s", is_elevated())
 
 

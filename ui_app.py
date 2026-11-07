@@ -1322,6 +1322,9 @@ class MainWindow(QMainWindow):
         self._resize_idle_timer.setSingleShot(True)
         self._resize_idle_timer.setInterval(170)
         self._resize_idle_timer.timeout.connect(self._finish_resize)
+        self._card_layout_timer = QTimer(self)
+        self._card_layout_timer.setSingleShot(True)
+        self._card_layout_timer.timeout.connect(self._size_centered_cards)
         self.setMinimumSize(880, 600)
         available = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1500, available.width() - 80),
@@ -1562,6 +1565,7 @@ class MainWindow(QMainWindow):
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QFrame.Shape.NoFrame)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.viewport().installEventFilter(self)
             self.page_stack.addWidget(scroll)
             body = QWidget()
             body.setObjectName("root")
@@ -2232,7 +2236,6 @@ class MainWindow(QMainWindow):
             (presets_card, self.presets_scroll, 960),
             (settings_shell, self.settings_scroll, 1000),
         )
-        QTimer.singleShot(0, self._size_centered_cards)
         self._refresh_profile_summary()
         self._refresh_toggle_labels()
         self._show_section(0)
@@ -2240,15 +2243,19 @@ class MainWindow(QMainWindow):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
     def _size_centered_cards(self):
+        if not self.isVisible() or self.isMinimized():
+            return
         current = self.page_stack.currentWidget()
+        margins = current.widget().layout().contentsMargins()
+        available = current.viewport().width() - margins.left() - margins.right()
+        if available <= 0:
+            return
         for card, scroll, limit in self._centered_cards:
             if scroll is not current:
                 continue
-            available = scroll.viewport().width() - 56
-            if available > 0:
-                target = min(limit, available)
-                if card.width() != target:
-                    card.setFixedWidth(target)
+            target = min(limit, available)
+            if card.minimumWidth() != target or card.maximumWidth() != target:
+                card.setFixedWidth(target)
         if hasattr(self, "effects_card") and self.page_stack.currentIndex() in (0, 1):
             self._adapt_workspace_layout()
 
@@ -2308,10 +2315,12 @@ class MainWindow(QMainWindow):
                 for effect in self._shadowed_surfaces:
                     effect.setEnabled(False)
             self._resize_idle_timer.start()
-        if hasattr(self, "_centered_cards"):
-            self._size_centered_cards()
         if getattr(self, "quick_panel", None) is not None and self.quick_panel.isVisible():
             self._position_quick_panel()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._card_layout_timer.start(0)
 
     def _finish_resize(self):
         if getattr(self, "_native_resizing", False):
@@ -2403,6 +2412,12 @@ class MainWindow(QMainWindow):
         return edges
 
     def eventFilter(self, watched, event):
+        if (event.type() == QEvent.Type.Resize and hasattr(self, "_centered_cards") and
+                watched is self.page_stack.currentWidget().viewport() and
+                event.oldSize().width() != event.size().width()):
+            # The scroll area can settle after the outer resize or change
+            # width when a scrollbar appears. Read its geometry after layout.
+            self._card_layout_timer.start(0)
         if watched in (getattr(self, "_window_root", None),
                        getattr(self, "_window_shell", None),
                        getattr(self, "_sidebar", None),
@@ -2468,6 +2483,7 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.WindowStateChange:
             self._refresh_window_shell()
+            self._card_layout_timer.start(0)
 
     def _show_section(self, index):
         section_titles = (
@@ -2481,8 +2497,7 @@ class MainWindow(QMainWindow):
         if self.quick_panel.isVisible():
             self.quick_panel.hide()
             self.quick_button.setChecked(False)
-        self._size_centered_cards()
-        QTimer.singleShot(0, self._size_centered_cards)
+        self._card_layout_timer.start(0)
         self.workspace_title.setText(section_titles[index][0])
         self.workspace_subtitle.setText(section_titles[index][1])
         for page, button in enumerate(self.nav_buttons):

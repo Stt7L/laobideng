@@ -39,7 +39,6 @@ def run(output, interactive=False):
         "pairing_mood": "撞色", "pairings_expanded": True,
     }
     window = ui_app.MainWindow(preview=True)
-    window.show()
     passed = []
 
     def check(condition, name):
@@ -47,6 +46,24 @@ def run(output, interactive=False):
         passed.append(name)
 
     try:
+        # The viewport can settle after the window has already opened. Keep
+        # the outer window unchanged while Qt expands the visible scroll area.
+        window.resize(1500, 900)
+        normal_maximum = window.scroll.maximumWidth()
+        window.scroll.setMaximumWidth(640)
+        window.show()
+        wait_for(lambda: window.preview.width() == window.scroll.viewport().width() - 56)
+        check(window.preview.width() < 760, "initial narrow viewport uses compact gallery")
+        outer_size = window.size()
+        window.scroll.setMaximumWidth(normal_maximum)
+        wait_for(lambda: window.preview.width() == 1000 and window.effects_card.width() == 1000)
+        check(window.size() == outer_size and window.scroll.viewport().width() >= 1056,
+              "viewport expands without an outer resize")
+        check(window.preview.width() == 1000 and window.effects_card.width() == 1000,
+              "gallery follows a late viewport width change")
+        check(window.category_row.itemAtPosition(0, 3) is not None,
+              "wide viewport restores four categories per row")
+
         check(QFontInfo(app.font()).family() == "HarmonyOS Sans SC", "bundled font")
         check(all(isinstance(button, SurfaceButton) for button in window.nav_buttons),
               "shared button contract")
@@ -57,11 +74,13 @@ def run(output, interactive=False):
                 window._show_section(page)
                 QTest.qWait(240)
                 scroll = window.page_stack.currentWidget()
-                for card, owner, _limit in window._centered_cards:
+                for card, owner, limit in window._centered_cards:
                     if owner is scroll and not card.isHidden():
                         point = card.mapTo(scroll.widget(), QPoint(0, 0))
                         check(point.x() >= 0 and point.x() + card.width() <=
                               scroll.viewport().width(), f"page {page} fits {width}x{height}")
+                        check(card.width() == min(limit, scroll.viewport().width() - 56),
+                              f"page {page} fills available width at {width}x{height}")
                 if output:
                     window.grab().save(str(output / f"ui-{width}-{page}.png"))
             check(not window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground),
@@ -287,6 +306,17 @@ def run(output, interactive=False):
         window._show_section(0)
         window.hide()
         check(not frame_controller.shadow.isVisible(), "tray state leaves no orphan shadow")
+        window.resize(880, 600)
+        window.show_window()
+        wait_for(lambda: window.preview.width() == window.scroll.viewport().width() - 56)
+        check(window.preview.width() == window.scroll.viewport().width() - 56,
+              "tray restore uses compact viewport after a hidden resize")
+        window.hide()
+        window.resize(1500, 900)
+        window.show_window()
+        wait_for(lambda: window.preview.width() == 1000)
+        check(window.preview.width() == 1000 and window.effects_card.width() == 1000,
+              "tray restore expands gallery after a hidden resize")
         window.show()
         frame_controller.user32.ShowWindow(int(window.winId()), 0)
         frame_controller.sync()
