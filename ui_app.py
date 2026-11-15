@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend import LightingController, bluetooth_keyboard_present
-from app_privileges import is_elevated, request_elevated_restart
+from app_privileges import elevated_foreground_pid, is_elevated, request_elevated_restart
 from device_setup import DeviceSetupDialog, is_supported_v98, keycaps_from_profile
 from device_detection import detect_keyboards, preferred_known_keyboard
 from ui_controls import SurfaceButton, motion_duration
@@ -1341,6 +1341,7 @@ class MainWindow(QMainWindow):
         self.cancel_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self.cancel_shortcut.activated.connect(self._handle_escape)
         self._build_tray()
+        self._compatibility_hint_shown = False
         self._build_single_instance_server()
         self._set_light_title_bar()
         self._window_frame = RoundedWindowFrame(self)
@@ -2142,7 +2143,7 @@ class MainWindow(QMainWindow):
         startup_layout.addWidget(self.startup_status)
         self.game_compatibility_status = QLabel(
             "本次已使用管理员权限，可与管理员运行的游戏接收按键。" if is_elevated() else
-            "游戏以管理员权限运行时，可使用游戏兼容启动。仅本次提权，需系统确认；重启时灯光会短暂停顿。")
+            "MuMu 或游戏以管理员权限运行时，可使用游戏兼容启动。Windows 会请求本次授权，重启时灯光会短暂停顿。")
         self.game_compatibility_status.setObjectName("muted")
         self.game_compatibility_status.setWordWrap(True)
         startup_layout.addWidget(self.game_compatibility_status)
@@ -2551,12 +2552,12 @@ class MainWindow(QMainWindow):
         self._refresh_startup_control()
         LOG.info("Start with Windows: %s", enabled)
 
-    def _restart_for_game(self):
-        if self.preview_mode or is_elevated():
+    def _restart_for_game(self, *, background=False):
+        if self.preview_mode or self.exiting or is_elevated():
             return
         self._save_settings()
         try:
-            request_elevated_restart()
+            request_elevated_restart(background=background)
         except OSError as error:
             self.game_compatibility_status.setText(str(error))
             LOG.info("Game compatibility restart not confirmed")
@@ -2608,7 +2609,8 @@ class MainWindow(QMainWindow):
             return
         self.tray = QSystemTrayIcon(QIcon(str(ICON)), self)
         self.tray.setToolTip("老必灯 · 键盘灯效工作室")
-        self.tray_menu = TrayMenu(self, control_icon)
+        restart = None if is_elevated() else lambda: self._restart_for_game(background=True)
+        self.tray_menu = TrayMenu(self, control_icon, restart_for_game=restart)
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
         LOG.info("System tray visible with show, toggle and exit actions")
@@ -2743,6 +2745,15 @@ class MainWindow(QMainWindow):
         self.preview.update()
 
     def _check_connection_mode(self):
+        if (self.tray is not None and not self._compatibility_hint_shown and
+                self.engine.connected and self.engine.ripples_enabled and
+                self.engine.effect in REACTIVE and not is_elevated()):
+            pid = elevated_foreground_pid()
+            if pid is not None:
+                self._compatibility_hint_shown = True
+                LOG.info("Elevated foreground process detected during reactive lighting: pid=%s", pid)
+                self.tray.showMessage("游戏兼容启动",
+                    "当前应用以管理员权限运行。若按键灯效无响应，请右击老必灯托盘图标，选择「游戏兼容启动」。")
         if self.engine.transport != "wireless":
             return
         if bluetooth_keyboard_present():
@@ -3602,6 +3613,7 @@ def run(preview=False):
     LOG.info("Active UI font: %s", QFontInfo(app.font()).family())
     app.setQuitOnLastWindowClosed(False)
     autostart = "--autostart" in sys.argv and not preview
+    start_in_tray = (autostart or "--tray" in sys.argv) and not preview
 
     mutex = None
     if not preview:
@@ -3621,16 +3633,16 @@ def run(preview=False):
             raise ctypes.WinError(ctypes.get_last_error())
         already_running = ctypes.get_last_error() == 183
         if already_running:
-            if not autostart:
+            if not start_in_tray:
                 show_existing_instance()
             kernel32.CloseHandle(mutex)
             return 0
     window = MainWindow(preview=preview)
-    if not autostart or window.tray is None:
+    if not start_in_tray or window.tray is None:
         window.show()
         window._window_frame.ensure_visible()
     else:
-        LOG.info("Started with Windows; window kept in system tray")
+        LOG.info("Started in system tray (login startup=%s)", autostart)
     result = app.exec()
     if not window.exiting:
         window.engine.close()

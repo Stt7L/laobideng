@@ -94,7 +94,6 @@ class RoundedWindowFrame(QObject):
         self.window = window
         self.shadow = _WindowShadow() if sys.platform == "win32" else None
         self._region_signature = None
-        self._pending = False
         self._syncing = False
         self._resizing = False
         self._stack_dirty = True
@@ -119,22 +118,26 @@ class RoundedWindowFrame(QObject):
             QApplication.instance().aboutToQuit.connect(self.shadow.close)
 
     def eventFilter(self, watched, event):
-        if event.type() in (QEvent.Type.Hide, QEvent.Type.Close):
+        event_type = event.type()
+        if event_type in (QEvent.Type.Hide, QEvent.Type.Close):
+            self._sync_timer.stop()
             self.shadow.hide()
-        elif event.type() in (QEvent.Type.Show, QEvent.Type.Move, QEvent.Type.Resize,
-                              QEvent.Type.WindowStateChange, QEvent.Type.WindowActivate,
-                              QEvent.Type.ScreenChangeInternal):
-            if event.type() in (QEvent.Type.Resize, QEvent.Type.WindowStateChange):
-                # Apply the region before the new-size paint. A deferred old
-                # region would briefly expose desktop in the newly grown area.
-                self.sync(region_only=True)
-            if event.type() in (QEvent.Type.Show, QEvent.Type.WindowActivate,
-                                 QEvent.Type.WindowStateChange):
+        elif event_type in (QEvent.Type.Show, QEvent.Type.Move, QEvent.Type.Resize,
+                            QEvent.Type.WindowStateChange, QEvent.Type.WindowActivate,
+                            QEvent.Type.ScreenChangeInternal):
+            if event_type in (QEvent.Type.Show, QEvent.Type.WindowActivate,
+                              QEvent.Type.WindowStateChange):
                 self._stack_dirty = True
-            # Coalesce geometry/activation events from the same event-loop turn.
-            if not self._pending and not self._resizing:
-                self._pending = True
-                self._sync_timer.start()
+            if self._resizing:
+                # Geometry events still arrive in the native move/size loop.
+                # Track them directly so the shadow doesn't wait for a timer.
+                self.sync()
+            else:
+                if event_type in (QEvent.Type.Resize, QEvent.Type.WindowStateChange):
+                    # Apply the region before the new-size paint.
+                    self.sync(region_only=True)
+                if not self._sync_timer.isActive():
+                    self._sync_timer.start()
         return False
 
     def content_visible(self):
@@ -153,15 +156,10 @@ class RoundedWindowFrame(QObject):
 
     def set_resizing(self, active):
         self._resizing = bool(active)
-        if self.shadow is None:
-            return
-        if active:
-            self._sync_timer.stop()
-            self._pending = False
-            self.shadow.hide()
-        else:
+        self._sync_timer.stop()
+        if not active:
             self._stack_dirty = True
-            self.sync()
+        self.sync()
 
     def sync(self, region_only=False):
         if self._syncing:
@@ -173,7 +171,6 @@ class RoundedWindowFrame(QObject):
             self._syncing = False
 
     def _sync_window(self, region_only=False):
-        self._pending = False
         if self.shadow is None:
             return
         window = self.window
@@ -208,7 +205,7 @@ class RoundedWindowFrame(QObject):
                 LOG.warning("Could not apply custom window corners: %s", ctypes.get_last_error())
                 self.shadow.hide()
                 return
-        if square or self._resizing:
+        if square:
             self.shadow.hide()
             return
         if region_only:

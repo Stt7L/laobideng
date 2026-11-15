@@ -12,7 +12,7 @@ from ui_controls import SurfaceButton
 
 
 class TrayMenu(QWidget):
-    def __init__(self, parent, icon_factory):
+    def __init__(self, parent, icon_factory, restart_for_game=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint |
                          Qt.WindowType.NoDropShadowWindowHint)
         self.setWindowTitle("老必灯 · 快捷菜单")
@@ -35,6 +35,8 @@ class TrayMenu(QWidget):
         self.buttons = []
         self.show_button = self._button("显示窗口", "window_restore", parent.show_window, layout)
         self.toggle_button = self._button("暂停灯效", "pause", parent._toggle_effect, layout)
+        if restart_for_game is not None:
+            self._button("游戏兼容启动", "refresh", restart_for_game, layout)
         line = QFrame(self)
         line.setFixedHeight(1)
         line.setStyleSheet("background: #E9E9EB; border: none; margin: 0 9px;")

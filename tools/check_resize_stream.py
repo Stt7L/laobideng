@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backend
 import ui_app
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtWidgets import QApplication
 
 parser = argparse.ArgumentParser()
@@ -91,9 +91,28 @@ if not args.baseline:
 
     user32 = ctypes.WinDLL("user32")
     user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    frame = window._window_frame
+
+    def check_shadow_tracks_window():
+        margin = frame.shadow.MARGIN
+        shadow_handle = int(frame.shadow.winId())
+        assert frame.shadow.isVisible() and frame.user32.IsWindowVisible(shadow_handle), (
+            "companion shadow disappeared during native move/resize")
+        content_rect, shadow_rect = ctypes.wintypes.RECT(), ctypes.wintypes.RECT()
+        assert frame.user32.GetWindowRect(int(window.winId()), ctypes.byref(content_rect))
+        assert frame.user32.GetWindowRect(shadow_handle, ctypes.byref(shadow_rect))
+        physical_margin = round(margin * window.devicePixelRatioF())
+        margins = (content_rect.left - shadow_rect.left, content_rect.top - shadow_rect.top,
+                   shadow_rect.right - content_rect.right, shadow_rect.bottom - content_rect.bottom)
+        assert all(abs(value - physical_margin) <= 1 for value in margins), (
+            f"companion shadow did not follow window geometry: {margins}")
+
     user32.SendMessageW(int(window.winId()), 0x0231, 0, 0)
-    assert window._native_resizing and not window._window_frame.shadow.isVisible()
-    print("PASS: native sizing loop suspends layered shadow", flush=True)
+    assert window._native_resizing
+    check_shadow_tracks_window()
+    window.move(window.pos() + QPoint(32, 24))
+    check_shadow_tracks_window()  # Check before any deferred Qt timer can run.
+    print("PASS: shadow stays visible and tracks a move during the native sizing loop", flush=True)
 
 costs = []
 for i in range(72):
@@ -101,6 +120,8 @@ for i in range(72):
     height = 630 + (i * 9) % 280
     start = time.perf_counter()
     window.resize(width, height)
+    if not args.baseline:
+        check_shadow_tracks_window()
     app.processEvents()
     costs.append((time.perf_counter() - start) * 1000)
 print(f"resize rounds: {len(costs)}; median={statistics.median(costs):.2f} ms; "
@@ -108,7 +129,8 @@ print(f"resize rounds: {len(costs)}; median={statistics.median(costs):.2f} ms; "
 if not args.baseline:
     user32.SendMessageW(int(window.winId()), 0x0232, 0, 0)
     assert not window._native_resizing and window._window_frame.shadow.isVisible()
-    print("PASS: leaving native sizing restores shadow and preview", flush=True)
+    check_shadow_tracks_window()
+    print("PASS: shadow tracks every resize and remains visible after native sizing", flush=True)
 if args.interactive:
     window.setWindowTitle("老必灯 · 缩放检查")
     window.resize(1180, 760)

@@ -23,6 +23,8 @@ executable, args, directory = privileges.restart_command()
 check(Path(executable).is_absolute() and Path(executable).is_file(), 'restart uses actual executable path')
 check('--restart-after' in args and str(os.getpid()) in args and '--autostart' not in args, 'handoff identifies parent without changing startup preference')
 check('main.py' in args and Path(directory).is_dir(), 'source launch points to existing entry')
+check('--tray' not in args and '--tray' in privileges.restart_command(background=True)[1],
+      'tray handoff restarts in background')
 
 
 class Function:
@@ -77,6 +79,7 @@ class Label:
 
 class Host:
     preview_mode = False
+    exiting = False
     game_compatibility_status = Label()
 
     def __init__(self):
@@ -94,16 +97,16 @@ try:
     ui_app.is_elevated = lambda: False
     host = Host()
 
-    def cancelled():
+    def cancelled(**kwargs):
         raise OSError('cancelled')
 
     ui_app.request_elevated_restart = cancelled
     ui_app.MainWindow._restart_for_game(host)
     check(host.calls == ['save'], 'cancel retains current app and saved settings')
-    ui_app.request_elevated_restart = lambda: host.calls.append('consent')
+    ui_app.request_elevated_restart = lambda **kwargs: host.calls.append(kwargs['background'])
     host.calls.clear()
-    ui_app.MainWindow._restart_for_game(host)
-    check(host.calls == ['save', 'consent', 'exit'], 'save and consent precede orderly shutdown')
+    ui_app.MainWindow._restart_for_game(host, background=True)
+    check(host.calls == ['save', True, 'exit'], 'tray restart preserves background and hands off after consent')
     host.preview_mode = True
     host.calls.clear()
     ui_app.MainWindow._restart_for_game(host)

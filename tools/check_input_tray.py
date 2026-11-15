@@ -103,7 +103,7 @@ host = Host()
 host.setWindowTitle("老必灯 · 托盘检查")
 host.resize(500, 300)
 host.show()
-menu = TrayMenu(host, control_icon)
+menu = TrayMenu(host, control_icon, restart_for_game=lambda: host.calls.append("compatibility"))
 # Stable ownership for deterministic keyboard/layout checks. Restore before
 # testing the native foreground/deactivation path.
 native_foreground = menu.user32.GetForegroundWindow
@@ -129,6 +129,15 @@ try:
     app.processEvents()
     check(host.calls == ["toggle"] and not menu.isVisible(), "Enter closes popup before invoking exactly once")
     check(not menu.watchdog.isActive(), "hidden popup stops polling")
+    open_menu()
+    QTest.keyClick(menu, Qt.Key.Key_Down)
+    QTest.keyClick(menu, Qt.Key.Key_Down)
+    check(menu.buttons[2].text() == "游戏兼容启动" and menu.buttons[2].hasFocus(),
+          "compatibility launch is available from the tray")
+    QTest.keyClick(menu, Qt.Key.Key_Return)
+    app.processEvents()
+    check(host.calls == ["toggle", "compatibility"] and not menu.isVisible(),
+          "tray closes before invoking compatibility launch")
     open_menu()
     QTest.keyClick(menu, Qt.Key.Key_Escape)
     check(not menu.isVisible(), "Escape dismisses menu")

@@ -11,15 +11,59 @@ def is_elevated():
     return bool(ctypes.WinDLL('shell32', use_last_error=True).IsUserAnAdmin())
 
 
-def restart_command():
+def elevated_foreground_pid():
+    """Read the foreground process's elevation without opening its UI."""
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    user.GetForegroundWindow.restype = wintypes.HWND
+    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    hwnd = user.GetForegroundWindow()
+    if not hwnd:
+        return None
+    pid = wintypes.DWORD()
+    user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value or pid.value == os.getpid():
+        return None
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    process = kernel.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        return None
+    token = wintypes.HANDLE()
+    try:
+        security = ctypes.WinDLL('advapi32', use_last_error=True)
+        security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                               ctypes.POINTER(wintypes.HANDLE)]
+        security.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                  wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        if not security.OpenProcessToken(process, 8, ctypes.byref(token)):  # TOKEN_QUERY
+            return None
+        elevated = wintypes.DWORD()
+        size = wintypes.DWORD()
+        if (security.GetTokenInformation(token, 20, ctypes.byref(elevated),
+                                         ctypes.sizeof(elevated), ctypes.byref(size))
+                and elevated.value):
+            return pid.value
+        return None
+    finally:
+        if token:
+            kernel.CloseHandle(token)
+        kernel.CloseHandle(process)
+
+
+def restart_command(background=False):
     executable = Path(sys.executable).resolve()
     args = [] if getattr(sys, 'frozen', False) else [str(Path(__file__).resolve().with_name('main.py'))]
     args += ['--restart-after', str(os.getpid())]
+    if background:
+        args.append('--tray')
     return str(executable), subprocess.list2cmdline(args), str(executable.parent)
 
 
-def request_elevated_restart():
-    executable, arguments, directory = restart_command()
+def request_elevated_restart(background=False):
+    executable, arguments, directory = restart_command(background)
     shell = ctypes.WinDLL('shell32', use_last_error=True)
     shell.ShellExecuteW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                    wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
