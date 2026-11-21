@@ -39,7 +39,7 @@ class TrayMenu(QWidget):
             self._button("游戏兼容启动", "refresh", restart_for_game, layout)
         line = QFrame(self)
         line.setFixedHeight(1)
-        line.setStyleSheet("background: #E9E9EB; border: none; margin: 0 9px;")
+        line.setStyleSheet("background: #E5E5E5; border: none; margin: 0 9px;")
         layout.addSpacing(3)
         layout.addWidget(line)
         layout.addSpacing(3)
@@ -112,7 +112,7 @@ class TrayMenu(QWidget):
             painter.setBrush(QColor(20, 20, 24, 2 if spread > 5 else 3))
             shadow = panel.translated(0, 4).adjusted(-spread, -spread, spread, spread)
             painter.drawRoundedRect(shadow, 18 + spread, 18 + spread)
-        painter.setBrush(QColor("#FCFCFC"))
+        painter.setBrush(QColor("#FFFFFF"))
         painter.drawRoundedRect(panel, 18, 18)
 
     def _check_owner(self):

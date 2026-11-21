@@ -55,7 +55,7 @@ class SurfaceButton(QPushButton):
     """
 
     _LEFT_ALIGNED = frozenset((
-        "sideNav", "settingsMenuChoice", "categoryChoice", "colorTile",
+        "settingsMenuChoice", "categoryChoice", "colorTile",
         "palettePair", "startupToggle", "inspirationToggle",
     ))
     _WINDOW_CONTROLS = frozenset(("windowControl", "windowClose"))
@@ -190,27 +190,32 @@ class SurfaceButton(QPushButton):
         border = _clear_surface()
         if name in ("primary", "actionPrimary"):
             base, hover, selected, pressed = (
-                "#1D1D1F", "#303033", "#18181A", "#080809")
+                "#303030", "#424242", "#282828", "#1E1E1E")
             text, selected_text = "#FFFFFF", "#FFFFFF"
         elif name in ("quiet", "inspirationToggle") or self.isFlat():
             base, hover, selected, pressed = (
-                _clear_surface(), "#F0F0F2", "#E9E9EB", "#E4E4E7")
-            text = "#626266" if name == "quiet" else "#252527"
+                _clear_surface(), "#F0F0F0", "#E6E6E6", "#DEDEDE")
+            text = "#626266" if name == "quiet" else "#343434"
             selected_text = "#1D1D1F"
-        elif name in ("sideNav", "settingsMenuChoice"):
+        elif name == "settingsMenuChoice":
             base, hover, selected, pressed = (
-                _clear_surface(), "#F1F1F3", "#EDEDEF", "#E3E3E6")
-            text, selected_text = "#3B3B3D", "#1D1D1F"
-        elif name in ("categoryChoice", "transportChoice", "pairingMood"):
+                _clear_surface(), "#F3F3F3", "#E5E5E5", "#DBDBDB")
+            text, selected_text = "#484848", "#3E3E3E"
+        elif name in ("categoryChoice", "workspaceTab", "pairingMood"):
             base, hover, selected, pressed = (
-                "#F3F3F4", "#E9E9EB", "#E5E5E7", "#DCDCDF")
-            text, selected_text = "#444447", "#1D1D1F"
+                _clear_surface(), QColor(205, 205, 205, 65),
+                _clear_surface(), QColor(196, 196, 196, 72))
+            text, selected_text = "#626262", "#202020"
+        elif name == "transportChoice":
+            base, hover, selected, pressed = (
+                "#F4F4F4", "#ECECEC", "#DFDFDF", "#D5D5D5")
+            text, selected_text = "#535353", "#3A3A3A"
         elif name in ("colorTile", "palettePair", "startupToggle"):
             base, hover, selected, pressed = (
-                "#F7F7F8", "#EFEFF1", "#E9E9EC", "#E4E4E7")
-            text, selected_text = "#252527", "#1D1D1F"
+                "#F7F7F7", "#F0F0F0", "#E8E8E8", "#DFDFDF")
+            text, selected_text = "#343434", "#1D1D1F"
             if name == "palettePair":
-                border = _mix(border, "#BDBDC2", self._checked_level)
+                border = _mix(border, "#989898", self._checked_level)
         elif name in self._WINDOW_CONTROLS:
             base, selected = _clear_surface(), "#E6E6E8"
             hover = "#F3E4E4" if name == "windowClose" else "#E6E6E8"
@@ -218,18 +223,18 @@ class SurfaceButton(QPushButton):
             text, selected_text = "#555558", "#1D1D1F"
         else:
             base, hover, selected, pressed = (
-                "#F2F2F3", "#E8E8EA", "#E5E5E8", "#DBDBDE")
+                "#F1F1F1", "#E9E9E9", "#E2E2E2", "#DADADA")
             text, selected_text = "#1D1D1F", "#1D1D1F"
             if name == "actionSecondary":
-                selected, selected_text = "#222224", "#FFFFFF"
+                selected, selected_text = "#5B5B5B", "#FFFFFF"
 
         background = _mix(base, selected, self._checked_level)
         hover_amount = self._hover_level * (1.0 - self._checked_level * 0.45)
         if name == "actionSecondary":
-            hover = _mix(hover, "#343437", self._checked_level)
+            hover = _mix(hover, "#626262", self._checked_level)
         background = _mix(background, hover, hover_amount)
         if name == "actionSecondary":
-            pressed = _mix(pressed, "#111113", self._checked_level)
+            pressed = _mix(pressed, "#444444", self._checked_level)
         background = _mix(background, pressed, self._press_level)
         foreground = _mix(text, selected_text, self._checked_level)
         if name in ("quiet", "inspirationToggle", "sideNav", "settingsMenuChoice"):
@@ -240,7 +245,7 @@ class SurfaceButton(QPushButton):
         elif self.hasFocus() and self._keyboard_focus:
             # The only focus perimeter is the button's existing outer contour.
             border = QColor("#747478" if name in ("primary", "actionPrimary")
-                            else "#5E5E63")
+                            else "#6A6A6A")
         return background, foreground, border
 
     def paintEvent(self, _event):
@@ -257,12 +262,16 @@ class SurfaceButton(QPushButton):
             -0.75 - press_inset, -0.75 - press_inset)
         if shape.width() <= 0 or shape.height() <= 0:
             return
-        if background.alpha() and self._press_level > 0.001:
+        primary = self.objectName() in ("primary", "actionPrimary")
+        key_surface = self.objectName() == "transportChoice"
+        if (primary or key_surface) and self.isEnabled():
             highlight = QLinearGradient(shape.topLeft(), shape.bottomLeft())
             highlight.setColorAt(0, _mix(background, "#FFFFFF",
-                                         self._press_level * 0.055))
+                                         (0.12 if primary else 0.35) * (1 - self._press_level)))
             highlight.setColorAt(1, background)
             painter.setBrush(highlight)
+            if key_surface and not self._keyboard_focus:
+                border = _mix(background, "#A6A6A6", .22 + .22 * self._checked_level)
         else:
             painter.setBrush(background)
         focused = self.hasFocus() and self._keyboard_focus and self.isEnabled()

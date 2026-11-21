@@ -1,40 +1,56 @@
-"""Build the compact key-and-light identity for window, tray and installer."""
+"""Export the app icon for Windows from the full-bleed artwork."""
 
-import sys
 from pathlib import Path
+import struct
+import sys
 
-from PySide6.QtCore import Qt, QRectF
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QBuffer, QIODevice, QRectF, Qt
+from PySide6.QtGui import QImage, QPainter, QPainterPath
 
 
-app = QApplication(sys.argv)
-root = Path(__file__).resolve().parent
-canvas = QPixmap(512, 512)
-canvas.fill(Qt.GlobalColor.transparent)
-painter = QPainter(canvas)
-painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-painter.setPen(Qt.PenStyle.NoPen)
-painter.setBrush(QColor("#151515"))
-painter.drawRoundedRect(QRectF(8, 8, 496, 496), 116, 116)
-for color, width, points in (
-    ("#777777", 17, ((287, 94), (431, 147), (431, 365), (287, 418))),
-    ("#F1F1F1", 20, ((259, 160), (343, 190), (343, 322), (259, 352))),
-):
-    path = QPainterPath()
-    path.moveTo(*points[0])
-    path.cubicTo(*points[1], *points[2], *points[3])
-    pen = QPen(QColor(color), width)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.drawPath(path)
-painter.setPen(Qt.PenStyle.NoPen)
-painter.setBrush(QColor("#FFFFFF"))
-painter.drawRoundedRect(QRectF(147, 193, 126, 126), 33, 33)
-painter.setBrush(QColor("#E8E8E8"))
-painter.drawRoundedRect(QRectF(165, 208, 90, 18), 9, 9)
-painter.end()
-canvas.save(str(root / "ripple.png"))
-canvas.scaled(256, 256, Qt.AspectRatioMode.IgnoreAspectRatio,
-              Qt.TransformationMode.SmoothTransformation).save(str(root / "ripple.ico"))
+def build_icon():
+    root = Path(__file__).resolve().parent
+    artwork = QImage(str(root / "laobideng-app-icon.png"))
+    if artwork.isNull() or artwork.width() != artwork.height():
+        raise ValueError("App icon artwork must be a readable square image")
+
+    canvas = QImage(512, 512, QImage.Format.Format_ARGB32_Premultiplied)
+    canvas.fill(Qt.GlobalColor.transparent)
+    bounds = QRectF(8, 8, 496, 496)
+    mask = QPainterPath()
+    mask.addRoundedRect(bounds, 110, 110)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    painter.setClipPath(mask)
+    painter.drawImage(bounds, artwork)
+    painter.end()
+    if not canvas.save(str(root / "app-icon.png")):
+        raise OSError("Could not save app-icon.png")
+
+    # Store a pre-scaled image for each common Windows shell and tray size.
+    sizes = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+    directory = bytearray(struct.pack("<HHH", 0, 1, len(sizes)))
+    offset = len(directory) + 16 * len(sizes)
+    frames = []
+    for size in sizes:
+        frame = canvas.scaled(size, size, mode=Qt.TransformationMode.SmoothTransformation)
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not frame.save(buffer, "PNG"):
+            raise OSError(f"Could not encode the {size}px icon frame")
+        encoded = bytes(buffer.data())
+        buffer.close()
+        extent = size % 256  # ICO uses zero for 256 pixels.
+        directory.extend(struct.pack("<BBBBHHII", extent, extent, 0, 0, 1, 32,
+                                     len(encoded), offset))
+        frames.append(encoded)
+        offset += len(encoded)
+    (root / "app-icon.ico").write_bytes(directory + b"".join(frames))
+
+
+if __name__ == "__main__":
+    try:
+        build_icon()
+    except (OSError, ValueError) as error:
+        sys.exit(str(error))

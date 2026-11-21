@@ -28,7 +28,7 @@ def _close_icon():
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(QPen(QColor("#707075"), 2.4,
+    painter.setPen(QPen(QColor("#646464"), 2.4,
                         Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     painter.drawLine(10, 10, 22, 22)
     painter.drawLine(22, 10, 10, 22)
@@ -46,7 +46,7 @@ class ModernDialog(QDialog):
         self.setObjectName("modernDialog")
         self.setAutoFillBackground(True)
         palette = self.palette()
-        palette.setColor(palette.ColorRole.Window, QColor("#F6F6F6"))
+        palette.setColor(palette.ColorRole.Window, QColor("#FAFAFA"))
         self.setPalette(palette)
         self.setAccessibleName(title)
         self._native_frame_ready = False
@@ -56,7 +56,7 @@ class ModernDialog(QDialog):
 
         self.header = QFrame()
         self.header.setObjectName("dialogHeader")
-        self.header.setStyleSheet("QFrame#dialogHeader { background: #F6F6F6; border: none; }")
+        self.header.setStyleSheet("QFrame#dialogHeader { background: #FAFAFA; border: none; }")
         self.header.installEventFilter(self)
         header_layout = QHBoxLayout(self.header)
         header_layout.setContentsMargins(24, 20, 20, 16)
@@ -65,12 +65,12 @@ class ModernDialog(QDialog):
         heading.setSpacing(4)
         self.title_label = QLabel(title)
         self.title_label.setFont(_dialog_font(19, QFont.Weight.DemiBold))
-        self.title_label.setStyleSheet("font-size: 19px; font-weight: 600; color: #1D1D1F;")
+        self.title_label.setStyleSheet("font-size: 19px; font-weight: 600; color: #2A2A2A;")
         self.title_label.installEventFilter(self)
         heading.addWidget(self.title_label)
         self.subtitle_label = QLabel(subtitle)
         self.subtitle_label.setObjectName("hint")
-        self.subtitle_label.setStyleSheet("font-size: 13px; color: #707075;")
+        self.subtitle_label.setStyleSheet("font-size: 13px; color: #646464;")
         self.subtitle_label.setWordWrap(True)
         self.subtitle_label.installEventFilter(self)
         self.subtitle_label.setVisible(bool(subtitle))
@@ -93,8 +93,8 @@ class ModernDialog(QDialog):
         self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.content_scroll.setWidgetResizable(True)
         self.content_scroll.setStyleSheet(
-            "QScrollArea { background: #F6F6F6; border: none; }"
-            "QScrollArea > QWidget > QWidget { background: #F6F6F6; }"
+            "QScrollArea { background: #FAFAFA; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: #FAFAFA; }"
             "QScrollBar:horizontal { background: transparent; height: 7px; margin: 0; }"
             "QScrollBar::handle:horizontal { background: #D4D4D4; border-radius: 3px; min-width: 36px; }"
             "QScrollBar::handle:horizontal:hover { background: #AFAFAF; }"
@@ -104,7 +104,7 @@ class ModernDialog(QDialog):
         self.content = QFrame()
         self.content.setObjectName("dialogContent")
         self.content.setStyleSheet(
-            "QFrame#dialogContent { background: #FFFFFF; border: 1px solid #ECECEE;"
+            "QFrame#dialogContent { background: #FFFFFF; border: 1px solid #E5E5E5;"
             " border-radius: 18px; }")
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(20, 20, 20, 20)
@@ -115,7 +115,7 @@ class ModernDialog(QDialog):
         self.footer = QFrame()
         self.footer.setObjectName("dialogFooter")
         self.footer.setStyleSheet(
-            "QFrame#dialogFooter { background: #F6F6F6; border: none; }")
+            "QFrame#dialogFooter { background: #FAFAFA; border: none; }")
         self.actions = QHBoxLayout(self.footer)
         self.actions.setContentsMargins(24, 16, 24, 20)
         self.actions.setSpacing(10)

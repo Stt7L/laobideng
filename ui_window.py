@@ -55,7 +55,7 @@ class _WindowShadow(QWidget):
             painter.drawRoundedRect(panel.translated(0, 5).adjusted(
                 -spread, -spread, spread, spread), WINDOW_RADIUS + spread,
                 WINDOW_RADIUS + spread)
-        painter.setBrush(QColor("#F6F6F6"))
+        painter.setBrush(QColor("#FAFAFA"))
         painter.drawRoundedRect(panel, WINDOW_RADIUS, WINDOW_RADIUS)
         painter.end()
         self._tile, self._tile_ratio = tile, ratio
@@ -192,9 +192,11 @@ class RoundedWindowFrame(QObject):
             if square:
                 succeeded = self.user32.SetWindowRgn(hwnd, None, False)
             else:
-                # Leave one physical pixel for the antialiased companion edge.
-                radius = round(WINDOW_RADIUS * ratio)
-                region = self.gdi32.CreateRoundRectRgn(1, 1, width - 1, height - 1,
+                # Put the hard GDI edge inside the companion surface's fully
+                # opaque pixels, including diagonal steps at fractional DPI.
+                inset = math.ceil(1.5 * ratio)
+                radius = round(WINDOW_RADIUS * ratio) - inset
+                region = self.gdi32.CreateRoundRectRgn(inset, inset, width - inset, height - inset,
                                                       radius * 2, radius * 2)
                 succeeded = self.user32.SetWindowRgn(hwnd, region, False) if region else False
                 if region and not succeeded:

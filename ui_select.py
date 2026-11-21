@@ -31,14 +31,14 @@ class _ChoiceDelegate(QStyledItemDelegate):
         chosen = index.row() == self.combo.currentIndex()
         painter.setPen(Qt.PenStyle.NoPen)
         if hovered and enabled:
-            painter.setBrush(QColor("#ECECEE"))
+            painter.setBrush(QColor("#E5E5E5"))
             painter.drawRoundedRect(row, 11, 11)
         elif chosen:
-            painter.setBrush(QColor("#F3F3F4"))
+            painter.setBrush(QColor("#F3F3F3"))
             painter.drawRoundedRect(row, 11, 11)
 
         painter.setFont(option.font)
-        painter.setPen(QColor("#1D1D1F" if enabled else "#A0A0A4"))
+        painter.setPen(QColor("#2A2A2A" if enabled else "#A0A0A4"))
         text_rect = row.adjusted(11, 0, -32, 0)
         icon = index.data(Qt.ItemDataRole.DecorationRole)
         if icon is not None and hasattr(icon, "isNull") and not icon.isNull():
@@ -53,7 +53,7 @@ class _ChoiceDelegate(QStyledItemDelegate):
             check.moveTo(x - 4, y)
             check.lineTo(x - 1, y + 3)
             check.lineTo(x + 5, y - 4)
-            painter.setPen(QPen(QColor("#333336" if enabled else "#A0A0A4"), 1.7,
+            painter.setPen(QPen(QColor("#303030" if enabled else "#A0A0A4"), 1.7,
                                 Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             painter.drawPath(check)
         painter.restore()
@@ -138,7 +138,7 @@ class _ChoicePopup(QWidget):
             painter.setBrush(QColor(20, 20, 24, 2 if spread > 5 else 3))
             painter.drawRoundedRect(shadow.adjusted(-spread, -spread, spread, spread),
                                     16 + spread, 16 + spread)
-        painter.setBrush(QColor("#FCFCFC"))
+        painter.setBrush(QColor("#FFFFFF"))
         painter.drawRoundedRect(panel, 16, 16)
 
     def prepare(self):
@@ -326,11 +326,11 @@ class SurfaceComboBox(QComboBox):
         shade = round(230 - self._hover * 29)
         border = QColor(shade, shade, shade) if enabled else QColor("#EAEAEA")
         if focus or self._open > 0.01:
-            border = QColor("#555558")
+            border = QColor("#666666")
         painter.setPen(QPen(border, 1.25 if focus else 1.0))
         painter.drawRoundedRect(rect, 12, 12)
         painter.setFont(self.font())
-        painter.setPen(QColor("#1D1D1F" if enabled else "#A0A0A4"))
+        painter.setPen(QColor("#2A2A2A" if enabled else "#A0A0A4"))
         text_rect = rect.adjusted(12, 0, -36, 0)
         icon = self.itemIcon(self.currentIndex())
         if not icon.isNull():
@@ -345,7 +345,7 @@ class SurfaceComboBox(QComboBox):
         chevron.moveTo(-4, -2)
         chevron.lineTo(0, 2)
         chevron.lineTo(4, -2)
-        painter.setPen(QPen(QColor("#757579" if enabled else "#ABABB0"), 1.5,
+        painter.setPen(QPen(QColor("#757579" if enabled else "#ABABAB"), 1.5,
                             Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.drawPath(chevron)
         painter.restore()

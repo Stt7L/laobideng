@@ -1,4 +1,4 @@
-#define AppVersion "1.5.13"
+#define AppVersion "1.5.22"
 #define AppName "老必灯"
 
 [Setup]
@@ -16,14 +16,14 @@ DisableProgramGroupPage=yes
 DirExistsWarning=no
 OutputDir=release
 OutputBaseFilename=老必灯-Setup-{#AppVersion}
-SetupIconFile=assets\ripple.ico
+SetupIconFile=assets\app-icon.ico
 UninstallDisplayIcon={app}\老必灯.exe
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern light polar includetitlebar hidebevels
 WizardBackColor=#F6F6F6
 WizardImageFile=assets\installer-banner.png
-WizardSmallImageFile=assets\ripple.png
+WizardSmallImageFile=assets\app-icon.png
 WizardImageBackColor=#F6F6F6
 WizardSmallImageBackColor=#FFFFFF
 ShowLanguageDialog=no
@@ -46,8 +46,8 @@ Type: files; Name: "{app}\_internal\icuuc.dll"
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "LaoBiDeng"; Flags: uninsdeletevalue
 
 [Icons]
-Name: "{autoprograms}\老必灯"; Filename: "{app}\老必灯.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\老必灯"; Filename: "{app}\老必灯.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\老必灯"; Filename: "{app}\老必灯.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app-icon.ico"
+Name: "{autodesktop}\老必灯"; Filename: "{app}\老必灯.exe"; WorkingDir: "{app}"; IconFilename: "{app}\_internal\assets\app-icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\老必灯.exe"; Description: "启动老必灯"; Flags: nowait postinstall skipifsilent

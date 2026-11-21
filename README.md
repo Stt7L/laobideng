@@ -4,7 +4,7 @@
 
 ## 启动和退出
 
-普通用户下载 [v1.5.13 安装包](https://github.com/Stt7L/laobideng/releases/tag/v1.5.13) 中的 `LaoBiDeng-Setup-1.5.13.exe`，双击安装后从桌面或开始菜单启动，无需单独安装 Python。首次启动会扫描已连接的 HID 键盘，自动读取 VID/PID 和设备报告的型号；识别到已适配的 V98 Pro 可直接使用。系统只报告通用名称或连接了多把键盘时，可在设备设置里选择和修正。
+普通用户下载 [v1.5.22 安装包](https://github.com/Stt7L/laobideng/releases/tag/v1.5.22) 中的 `LaoBiDeng-Setup-1.5.22.exe`，双击安装后从桌面或开始菜单启动，无需单独安装 Python。首次启动会扫描已连接的 HID 键盘，自动读取 VID/PID 和设备报告的型号；识别到已适配的 V98 Pro 可直接使用。系统只报告通用名称或连接了多把键盘时，可在设备设置里选择和修正。
 
 目前安装包尚未签名，开启 Windows Smart App Control 的电脑可能阻止安装或启动。正式解决需要可信的代码签名证书；请不要为此关闭系统防护。源码和安装包均在本项目的 GitHub Releases 发布。
 
@@ -17,6 +17,8 @@
 请勿让其他灯控软件同时控制同一键盘；多个程序同时发送灯光帧可能造成闪烁。
 
 ## 灯效与颜色
+
+v1.5.22 更新桌面界面和应用图标。顶部导航与灯效分类支持拖动，灯效卡可随指针亮起柔光，键盘预览支持按住倾斜。配色灵感提供 70 组双色色卡，支持双行浏览和随机套用。当前配色与全局同步分区显示，窄窗口下自动上下排列。
 
 v1.5.13 在托盘菜单加入「游戏兼容启动」。MuMu 或其他前台软件以管理员权限运行时，普通权限下的按键读取可能受 Windows 限制。互动灯效开启时，程序检测到这种权限差异会提醒一次。点击托盘菜单中的入口并确认 Windows 授权，老必灯会短暂重启并继续留在托盘。移动或缩放窗口时，外侧阴影会随窗口边缘同步。
 
@@ -82,7 +84,7 @@ Fn 可作为独立灯位在自定义画布中点亮。Fn 是键盘固件功能�
 - `layout.py`：按用户提供的键盘照片绘制的 97 键键帽位置。
 - `effects.py`、`audio_spectrum.py`、`audio_meter.py`：66 种逐键灯效与系统播放声音分析。
 - `backend.py`、`keyboard_map.json`：按键监听、有线与 2.4G HID 数据发送。
-- `assets/ripple.svg`：图标矢量源文件。
+- `assets/laobideng-app-icon.png`：应用图标原稿，打包时生成 Windows 图标和安装器图像。
 - `installer.iss`、`build_release.ps1`：一键安装包的编译配置。
 - `inspect_video.py`：独立的视频分析工具；需要时运行 `pip install -r requirements-video-tools.txt` 安装可选媒体组件。键盘灯效程序不依赖这组组件。
 
